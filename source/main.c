@@ -372,6 +372,10 @@ static int load_module(so_module *mod, const char *name) {
 
 static AppletHookCookie g_applet_cookie;
 
+/* 0 while the HOME menu (or sleep) has the screen: the frame loop waits. */
+static volatile int g_sdt_focused = 1;
+int sdt_focused(void) { return g_sdt_focused; }
+
 static void nx_applet_hook(AppletHookType hook, void *param) {
   (void)param;
   switch (hook) {
@@ -385,6 +389,7 @@ static void nx_applet_hook(AppletHookType hook, void *param) {
        * gap into one frame on the way back. */
       u8 focus = appletGetFocusState();
       int focused = (focus == AppletFocusState_InFocus);
+      g_sdt_focused = focused;
       debugPrintf("[applet] focus=%d\n", focused);
       bp_boot_focus(focused);
       if (focused) bp_boot_resume(); else bp_boot_pause();
@@ -590,6 +595,12 @@ int main(int argc, char *argv[]) {
   android_native_update_mode();
   android_native_input_init();
   appletHook(&g_applet_cookie, nx_applet_hook, NULL);
+  /* The focus handling mode stays the default: on HOME or sleep the system
+   * freezes the whole process and thaws it afterwards, and the engine never
+   * hears of it. Tried and NOT kept (2026-11-19): NoSuspend plus the engine's
+   * own nativePause/nativeResume. The pause works, but after the resume the
+   * engine faults in its Vulkan code (libunity+0xf6f050, a null object) even
+   * when it is handed its window again in the order the Android activity uses. */
 
   /* jni_init, HID and applet setup all ran since the TLS was installed. */
   install_bionic_tls(main_tls);

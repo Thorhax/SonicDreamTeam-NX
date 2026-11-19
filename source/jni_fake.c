@@ -1156,7 +1156,16 @@ static void runq_post(void *obj, int kind) {
   mutexUnlock(&g_runq_lk);
 }
 static void post_runnable(void *runnable) { runq_post(runnable, 0); }
-static void post_message(void) { runq_post(g_last_proxy, 1); }
+/* SDT: the message goes to the Handler's own callback. The engine makes one
+ * Handler (with one Handler$Callback proxy) at startup and sends its first
+ * message straight away, so the newest proxy at THAT moment is the callback;
+ * it is remembered. Using the newest proxy at every send delivered the
+ * engine's onPause message to an unrelated C# proxy and crashed on HOME. */
+static void post_message(void) {
+  static FakeProxy *handler_cb;
+  if (!handler_cb) handler_cb = g_last_proxy;
+  runq_post(handler_cb, 1);
+}
 static int g_msg_what = 0;   /* captured from Handler.obtainMessage(what) for msg.what reads */
 unsigned g_kbd_trace;      /* set when swkbd closes; counts down as we log */
 /* Unity soft-input natives (captured at RegisterNatives, invoked on close). */

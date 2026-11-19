@@ -260,6 +260,7 @@ typedef struct {
 // --- global SDL device + player registry ------------------------------------
 
 static SDL_AudioDeviceID g_dev = 0;
+static int g_dev_own = 0;   /* g_dev is sdt_audio_out.c's loop, not an SDL device */
 static int g_dev_rate = 44100;
 static Player *g_players[MAX_PLAYERS];
 static int g_player_count = 0;
@@ -320,11 +321,18 @@ static inline int32_t read_sample_s16(const void *buf, long k, int sbytes, int i
  * "short" counts callbacks that ran out of data part-way and left the rest of
  * the block silent -- the exact shape of a click. */
 static volatile uint32_t g_st_enq, g_st_consumed, g_st_dry, g_st_short, g_st_cb;
+/* SDT: loudest sample FMOD handed over / loudest sample sent to the device
+ * since the last stats line, and the player's gain (x1000). Zero "in" means the
+ * engine itself is mixing silence. */
+static volatile int32_t g_st_peak_in, g_st_peak_out, g_st_gain_milli = -1;
 
+static int players_playing(void);
 void bp_audio_stats(char *out, size_t cap) {
   snprintf(out, cap,
-           "enq=%u consumed=%u cb=%u dry=%u short=%u",
-           g_st_enq, g_st_consumed, g_st_cb, g_st_dry, g_st_short);
+           "enq=%u consumed=%u cb=%u dry=%u short=%u peak in=%d out=%d gain=%d/1000 playing=%d",
+           g_st_enq, g_st_consumed, g_st_cb, g_st_dry, g_st_short,
+           (int)g_st_peak_in, (int)g_st_peak_out, (int)g_st_gain_milli, players_playing());
+  g_st_peak_in = 0; g_st_peak_out = 0;
 }
 
 // mix one playing player into the S16 stereo accumulator (int32 to avoid clip).
@@ -438,6 +446,11 @@ static void mix_movie(int32_t *acc, int frames) {
   SDL_UnlockMutex(g_movie_lock);
 }
 
+static int players_playing(void) {
+  int n = 0;
+  for (int i = 0; i < g_player_count; i++) if (g_players[i] && g_players[i]->in_use && g_players[i]->playing) n++;
+  return n;
+}
 static void SDLCALL audio_callback(void *ud, Uint8 *stream, int len) {
   (void)ud;
 
@@ -447,7 +460,8 @@ static void SDLCALL audio_callback(void *ud, Uint8 *stream, int len) {
   // and persists for its lifetime).
   static uint8_t audio_tls[BIONIC_TLS_SIZE] __attribute__((aligned(16)));
   static int tls_ready = 0;
-  if (!tls_ready) { install_bionic_tls(audio_tls); tls_ready = 1; }
+  if (!tls_ready) { install_bionic_tls(audio_tls); tls_ready = 1;
+                    { extern void diag_set_name(void *, const char *); diag_set_name(NULL, "sdl-audio"); } }
 
   const int frames = len / 4; // S16 stereo
   static int32_t acc[8192 * 2];
@@ -472,6 +486,7 @@ static void SDLCALL audio_callback(void *ud, Uint8 *stream, int len) {
     int32_t a = v < 0 ? -v : v;
     if (a > peak) peak = a;
   }
+  if (peak > g_st_peak_out) g_st_peak_out = peak;
   if (peak > 64) {
     static int once = 0;
     if (!once) { once = 1; debugPrintf("[fmod] OpenSL: first non-silent audio to device (peak=%d) -- SOUND IS ON\n", peak); }
@@ -488,6 +503,13 @@ static void ensure_device(int rate) {
     g_reg_lock = SDL_CreateMutex();
   if (g_dev)
     return;
+  /* SDT: the port's own output loop (sdt_audio_out.c) unless SDT_AUDIO=sdl */
+  { extern int sdt_audio_out_start(void (*)(void *, Uint8 *, int), int);
+    const char *sel = getenv("SDT_AUDIO");
+    if (!(sel && !strcmp(sel, "sdl")) && sdt_audio_out_start(audio_callback, BP_AUDIO_CALLBACK_FRAMES) == 0) {
+      g_dev = 1; g_dev_own = 1; g_dev_rate = 48000;
+      return;
+    } }
   if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
     debugPrintf("opensles: SDL audio init failed: %s\n", SDL_GetError());
     return;
@@ -512,6 +534,7 @@ static void ensure_device(int rate) {
   // Init path only -- deliberately NOT in audio_callback or bq_Enqueue. The
   // previous round's instrumentation logged from those and the console stopped
   // booting; this line runs once, before any audio thread exists.
+  debugPrintf("[fmod] SDL audio driver: %s\n", SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?");
   debugPrintf("[fmod] SDL mixer device: asked %d Hz, got %d Hz, %d ch%s\n",
               BP_AUDIO_DEVICE_RATE, have.freq, have.channels,
               have.freq == BP_AUDIO_DEVICE_RATE ? " (no resampling)"
@@ -796,6 +819,11 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
   }
   if (pBuffer && size)
     memcpy(b->own, pBuffer, size);
+  if (pBuffer && size >= 2) {       /* sampled peak: every 16th 16-bit word */
+    const int16_t *w = pBuffer; int32_t pk = g_st_peak_in;
+    for (SLuint32 i = 0; i < size / 2; i += 16) { int32_t v = w[i] < 0 ? -w[i] : w[i]; if (v > pk) pk = v; }
+    g_st_peak_in = pk; g_st_gain_milli = (int32_t)(p->gain * 1000.0f);
+  }
   b->data = b->own;
   b->size = size;
   p->q_tail = next;
@@ -1168,7 +1196,8 @@ uint32_t slCreateEngine(void **pEngine, uint32_t numOptions, const void *pEngine
 void opensles_shutdown(void) {
   opensles_movie_end();
   if (g_dev) {
-    SDL_CloseAudioDevice(g_dev);
+    if (g_dev_own) { extern void sdt_audio_out_stop(void); sdt_audio_out_stop(); }
+    else SDL_CloseAudioDevice(g_dev);
     g_dev = 0;
   }
   free(g_movie_pcm);

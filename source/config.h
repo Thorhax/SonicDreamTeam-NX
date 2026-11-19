@@ -56,8 +56,8 @@
  * derives persistentDataPath from it, so these are not cosmetic. 2020.3 ships
  * no assets/bin/Data/unity_app_guid; storage follows the package name. */
 #define CS_PACKAGE       "com.sdt.port"
-#define CS_VERSION_NAME  "1.7.7"
-#define CS_VERSION_CODE  2823
+#define CS_VERSION_NAME  "1.10.3"   /* the APK manifest's versionName */
+#define CS_VERSION_CODE  5          /* its versionCode */
 #define CS_APP_GUID      ""
 
 /* ---------------------------------------------------------------------------

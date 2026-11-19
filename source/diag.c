@@ -911,3 +911,17 @@ int diag_sample_named(const char *name, uint64_t out[4]) {
   }
   return 0;
 }
+
+/* Which core each registered thread prefers and may run on. For deciding where
+ * the engine's threads should live (sdt). */
+void diag_log_cores(void) {
+  for (int i = 0; i < DIAG_MAX_THREADS; i++) {
+    DiagThread *t = &g_threads[i];
+    if (!t->in_use || !t->handle) continue;
+    s32 pref = -9; u64 mask = 0;
+    const Result rc = svcGetThreadCoreMask(&pref, &mask, t->handle);
+    s32 prio = -1; svcGetThreadPriority(&prio, t->handle);
+    debugPrintf("[cores] %-28s preferred %d, mask %#llx, priority %#x%s\n", t->name[0] ? t->name : "?", (int)pref,
+                (unsigned long long)mask, (unsigned)prio, R_FAILED(rc) ? "  (query failed)" : "");
+  }
+}

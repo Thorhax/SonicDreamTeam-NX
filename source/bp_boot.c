@@ -21,6 +21,7 @@
  * SendSurfaceChangedEvent -> Resume -> FocusChanged and loops nativeRender.
  * MIT.
  * ------------------------------------------------------------------------- */
+#include <stdlib.h>
 #include "editbox.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -157,6 +158,9 @@ int bp_boot_and_run(void) {
   uint64_t frames = 0;
   uint32_t last_stat = 0;
   while (appletMainLoop() && !jni_quit_requested) {
+    { extern int sdt_focused(void);               /* the HOME menu has the screen: no frames */
+      while (!sdt_focused() && appletMainLoop() && !jni_quit_requested) svcSleepThread(50000000ull); }
+    if (frames == 900) { extern void diag_log_cores(void); diag_log_cores(); }
     editbox_pump();                     /* a queued soft-input request: swkbd + result, between frames */
     { extern void sdt_tune_frame(unsigned); sdt_tune_frame((unsigned)frames); }   /* render scale override */
     { extern void sdt_video_frame(void); sdt_video_frame(); }   /* videos that could not open: finish them */
@@ -347,10 +351,22 @@ int bp_boot_and_run(void) {
 #endif  /* DEBUG_LOG */
     if ((uint32_t)frames - last_stat >= 60) {
       extern void bp_audio_stats(char *out, size_t cap);
-      char st[128];
       last_stat = (uint32_t)frames;
+      char st[192];
       bp_audio_stats(st, sizeof st);
       debugPrintf("[audio] %s\n", st);
+      /* SDT_AUDIO_TRACE=1 in env.txt: the same line into audio.txt, in a release build too */
+      { static int tr = -1; if (tr < 0) tr = getenv("SDT_AUDIO_TRACE") != NULL;
+        if (tr) { FILE *f = fopen("sdmc:/switch/sdt/audio.txt", "a");
+                  if (f) { char pr[96]; unsigned a_, b_, c_;
+                           extern void sdt_audio_probe(char *, size_t);
+                           extern void sdt_threads_stats(unsigned *, unsigned *, unsigned *);
+                           sdt_audio_probe(pr, sizeof pr); sdt_threads_stats(&a_, &b_, &c_);
+                           fprintf(f, "%u %s | %s | stops %u/%u/%u\n", (unsigned)frames, st, pr, a_, b_, c_);
+                           { static char prev[24]; static int same, dumps; extern void sdt_stall_dump(FILE *);
+                             same = !strncmp(prev, st, 12) ? same + 1 : 0; memcpy(prev, st, 12);
+                             if (same >= 2 && dumps < 4 && frames > 1200) { dumps++; sdt_stall_dump(f); } }
+                           fclose(f); } } }
       /* Is the GC bridge freezing threads mid-log? The 50 ms bound in
        * wait_not_logging() gives up and suspends anyway, and nothing recorded
        * when that happened, so the theory could not be tested against a run.

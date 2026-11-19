@@ -9,6 +9,7 @@
  * MIT.
  */
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,4 +69,24 @@ void sdt_tune_frame(unsigned frame) {
   void *args[1] = { &want };
   il2cpp_runtime_invoke(set, asset, args, &exc);
   if (told++ < 6) debugPrintf("[tune] render scale %.2f -> %.2f (frame %u)%s\n", now, want, frame, exc ? "  (the call threw)" : "");
+}
+
+/* Diagnostics for SDT_AUDIO_TRACE (frame-loop thread): what the engine says
+ * about its own listener. */
+void sdt_audio_probe(char *out, size_t cap) {
+  API(void *, il2cpp_class_get_method_from_name, void *, const char *, int);
+  API(void *, il2cpp_runtime_invoke, void *, void *, void **, void **);
+  out[0] = 0;
+  if (!il2cpp_class_get_method_from_name || !il2cpp_runtime_invoke) return;
+  static void *gv, *gp;
+  if (!gv) {
+    void *k = class_named("UnityEngine", "AudioListener");
+    if (!k) return;
+    gv = il2cpp_class_get_method_from_name(k, "get_volume", 0);
+    gp = il2cpp_class_get_method_from_name(k, "get_pause", 0);
+  }
+  void *exc = NULL;
+  uint8_t *v = gv ? il2cpp_runtime_invoke(gv, NULL, NULL, &exc) : NULL;
+  uint8_t *p = gp && !exc ? il2cpp_runtime_invoke(gp, NULL, NULL, &exc) : NULL;
+  if (v && p && !exc) snprintf(out, cap, "listener volume=%.2f pause=%d", *(float *)(v + 0x10), (int)*(uint8_t *)(p + 0x10));
 }

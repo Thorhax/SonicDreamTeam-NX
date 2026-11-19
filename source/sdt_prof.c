@@ -93,3 +93,18 @@ void sdt_prof_start(void) {
   if (f) { fprintf(f, "sampler rc %x prio %x\n", rc, used); fclose(f); }
   debugPrintf("[prof] sampling UnityMain and UnityGfxDeviceWorker at %d Hz -> %s (rc %x, prio %x)\n", g_hz, g_path, rc, used);
 }
+
+/* SDT_AUDIO_TRACE: where the audio threads are, written when the queue stalls. */
+void sdt_stall_dump(FILE *f) {
+  static const char *const NAMES[] = { "sdl-audio", "FMOD mixer thread", "FMOD stream thread", "FMOD nonblocking thread (0)" };
+  uintptr_t lo = 0, hi = 0; sdt_cm_range(&lo, &hi);
+  fprintf(f, "  bases: nro_anchor %llx libunity %llx facade %llx codemem %llx\n",
+          (unsigned long long)(uintptr_t)&sdt_prof_anchor, (unsigned long long)(uintptr_t)unity_mod.load_virtbase,
+          (unsigned long long)(uintptr_t)il2cpp_mod.load_virtbase, (unsigned long long)lo);
+  for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+    uint64_t s[4] = { 0, 0, 0, 0 };
+    const int ok = diag_sample_named(NAMES[i], s);
+    fprintf(f, "  %-28s %s pc %llx lr %llx callers %llx %llx\n", NAMES[i], ok ? "ok" : "NOT SAMPLED",
+            (unsigned long long)s[0], (unsigned long long)s[1], (unsigned long long)s[2], (unsigned long long)s[3]);
+  }
+}

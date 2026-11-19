@@ -58,6 +58,9 @@ Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
 | `SDT_MEMTOTAL_MB` | `4096` | Memory reported to the game, which picks its quality class from it: 512 = lowest (30 fps cap), 4096 = middle (60 fps target), 8192 = highest |
 | `SDT_BUTTONS` | label | `position` maps buttons by position instead (the Switch's B becomes the game's A) |
 | `SDT_PSO_WARMUP` | on | `0` skips building the game's list of shader pipelines at boot |
+| `SDT_VSYNC` | on | `0` presents without waiting for the display (the game's own choice; can tear) |
+| `SDT_AUDIO` | own | `sdl` uses SDL's audio device instead of the port's own output loop |
+| `SDT_AUDIO_TRACE` | off | `1` writes `audio.txt` once a second: queue counters, loudness, where the audio threads are if the queue stalls |
 | `SDT_PROFILE` | off | Samples per second (e.g. `400`) for the built-in profiler; see Build |
 
 ## Known limits

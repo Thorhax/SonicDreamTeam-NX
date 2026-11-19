@@ -169,6 +169,14 @@ static VkResult VKAPI_CALL b_CreateSwapchainKHR(VkDevice dev, const VkSwapchainC
     c.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
     c.pNext = &fl;
   }
+  /* The game asks for IMMEDIATE (it paces itself with a frame limiter), which
+   * tears. FIFO waits for the screen's refresh instead. SDT_VSYNC=0 in env.txt
+   * keeps what the game asked for. */
+  { const char *e = getenv("SDT_VSYNC");
+    if (!(e && !strcmp(e, "0")) && c.presentMode != VK_PRESENT_MODE_FIFO_KHR) {
+      debugPrintf("[vk] present mode %d -> FIFO (vsync)\n", c.presentMode);
+      c.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    } }
   VkResult r = real ? real(dev, &c, alloc, out) : VK_ERROR_EXTENSION_NOT_PRESENT;
   if (r == VK_SUCCESS) {
     V.sc = *out; V.extent = c.imageExtent; V.format = c.imageFormat; V.nimg = 8;
