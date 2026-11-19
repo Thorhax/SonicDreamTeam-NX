@@ -3,7 +3,8 @@
  * engine's render thread, which makes the Vulkan calls).
  *
  * <root>/env.txt SDT_PROFILE=<hz> (e.g. 400) starts it. Every tick each thread
- * is stopped for an instant and its pc, lr and two callers are recorded;
+ * is stopped for an instant and its pc, lr and the callers up its frame chain
+ * (DEPTH addresses in all) are recorded;
  * samples are appended to <root>/prof.bin every few seconds, and <root>/prof.map
  * says where each module was loaded. tools/prof.py turns the two into a table.
  * MIT.
@@ -19,9 +20,11 @@
 #include "util.h"
 
 int diag_sample_named(const char *name, uint64_t out[4]);
+int diag_sample_named_n(const char *name, uint64_t *out, int n);
+#define DEPTH 16
 extern so_module main_mod, unity_mod, il2cpp_mod;
 
-typedef struct { uint32_t thread, pad; uint64_t a[4]; } Sample;
+typedef struct { uint32_t thread, pad; uint64_t a[DEPTH]; } Sample;
 #define CAP 8192
 static Sample g_buf[CAP];
 static int    g_n, g_hz;
@@ -55,7 +58,7 @@ static void prof_main(void *arg) {
     for (uint32_t t = 0; t < 2; t++) {
       if (g_n >= CAP) break;
       Sample *s = &g_buf[g_n];
-      if (diag_sample_named(NAMES[t], s->a)) { s->thread = t; s->pad = 0; g_n++; } else g_miss[t]++;
+      if (diag_sample_named_n(NAMES[t], s->a, DEPTH)) { s->thread = t; s->pad = 0; g_n++; } else g_miss[t]++;
     }
     if (g_n >= CAP - 4 || armTicksToNs(armGetSystemTick() - last_flush) > 4000000000ull) { flush(); last_flush = armGetSystemTick(); }
   }
@@ -74,6 +77,7 @@ void sdt_prof_start(void) {
   if (f) {
     uintptr_t lo = 0, hi = 0; sdt_cm_range(&lo, &hi);
     fprintf(f, "hz %d\n", g_hz);
+    fprintf(f, "depth %d\n", DEPTH);
     fprintf(f, "nro_anchor %llx\n", (unsigned long long)(uintptr_t)&sdt_prof_anchor);
     fprintf(f, "libmain %llx %llx\n", (unsigned long long)(uintptr_t)main_mod.load_virtbase, (unsigned long long)main_mod.load_size);
     fprintf(f, "libunity %llx %llx\n", (unsigned long long)(uintptr_t)unity_mod.load_virtbase, (unsigned long long)unity_mod.load_size);

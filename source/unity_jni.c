@@ -576,12 +576,45 @@ int unity_owns_class(const char *cls){
          has(cls,"view/Display") || has(cls,"DisplayManager") ||
          has(cls,"res/Configuration") || has(cls,"res/Resources") ||
          has(cls,"DisplayMetrics") || has(cls,"content/Context") || has(cls,"app/Activity") ||
-         has(cls,"unity3d/player/UnityPlayer");
+         has(cls,"unity3d/player/UnityPlayer") || has(cls,"java/util/Scanner");
+}
+
+/* SDT: the engine reads bin/Data/boot.config through Java -- AssetManager.open,
+ * new Scanner(stream).useDelimiter("\\A"), hasNext(), next() -- so the Scanner
+ * has to hand back the file's text or the engine starts with no boot settings
+ * at all. Settings are added after the file's own: <root>/env.txt
+ * SDT_BOOT_CONFIG="key=value;key=value" replaces the port's default additions. */
+static char g_last_asset[320];
+static void *scanner_text(void){
+  static char buf[4096];
+  size_t n = 0;
+  FILE *f = g_last_asset[0] ? fopen(g_last_asset, "rb") : NULL;
+  if (f) { n = fread(buf, 1, sizeof buf - 600, f); fclose(f); }
+  buf[n] = 0;
+  /* Default: graphics jobs. The engine then prepares its draw calls on the job
+   * workers instead of the frame-loop thread, which is the busiest thread and
+   * pinned to one core (measured in a heavy level: 44 -> 53 fps). "none" = only
+   * what the file says. */
+  const char *extra = NULL;
+  if (strstr(g_last_asset, "boot.config")) {
+    extra = getenv("SDT_BOOT_CONFIG");
+    if (!extra) extra = "gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1";
+    if (!strcmp(extra, "none") || !strcmp(extra, "0")) extra = NULL;
+  }
+  if (extra && strlen(extra) < 500) {
+    if (n && buf[n - 1] != '\n') buf[n++] = '\n';
+    for (const char *p = extra; *p; p++) buf[n++] = *p == ';' ? '\n' : *p;
+    buf[n++] = '\n'; buf[n] = 0;
+  }
+  debugPrintf("[io] Scanner.next() for %s -> %u bytes%s\n", g_last_asset, (unsigned)n, extra ? " (with SDT_BOOT_CONFIG)" : "");
+  return jni_make_string(buf);
 }
 
 /* ---- object-returning calls --------------------------------------------- */
 void *unity_dispatch_object(void *recv, const void *id_, va_list va){ const struct FakeID *id = id_;
   const char *cls=id->cls, *m=id->name;
+
+  if (has(cls,"java/util/Scanner")) return !strcmp(m,"next") ? scanner_text() : jni_make_object("java/util/Scanner");
 
   /* AssetManager.open(name) -> InputStream ; openFd(name) -> AssetFileDescriptor */
   if (has(cls,"AssetManager")){
@@ -600,6 +633,7 @@ void *unity_dispatch_object(void *recv, const void *id_, va_list va){ const stru
       FILE*fp=fopen(path,"rb");
       debugPrintf("[io] JNI AssetManager.open(%s) -> %s [%s]\n", name, fp?"ok":"MISSING", path);
       if(!fp) return NULL;
+      snprintf(g_last_asset, sizeof g_last_asset, "%s", path);
       UHandle*h=uh_new(UJ_INPUTSTREAM); h->fp=fp; return h;
     }
     if (has(m,"list")) return jni_make_object("String[]"); /* CHECK: empty array */
@@ -840,6 +874,7 @@ static int mkdirs_p(const char *path){
 }
 
 uint64_t unity_dispatch_int(void *recv, const void *id_, va_list va){ const struct FakeID *id = id_;
+  if (has(id->cls,"java/util/Scanner")) return has(id->name,"hasNext") ? 1 : 0;
   {
     const char *cls = id->cls, *m = id->name;
     /* ---- android.os.Environment: storage state ------------------------------

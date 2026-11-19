@@ -59,6 +59,8 @@ Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
 | `SDT_BUTTONS` | label | `position` maps buttons by position instead (the Switch's B becomes the game's A) |
 | `SDT_PSO_WARMUP` | on | `0` skips building the game's list of shader pipelines at boot |
 | `SDT_VSYNC` | on | `0` presents without waiting for the display (the game's own choice; can tear) |
+| `SDT_BOOT_CONFIG` | graphics jobs | Engine start-up settings added to the game's `boot.config`, as `key=value;key=value`. The default is `gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1` (draw calls prepared on the worker threads); `none` adds nothing |
+| `SDT_SHADOW_DISTANCE` | the game's | How far real-time shadows are drawn, in metres (`0` = none) |
 | `SDT_AUDIO` | own | `sdl` uses SDL's audio device instead of the port's own output loop |
 | `SDT_AUDIO_TRACE` | off | `1` writes `audio.txt` once a second: queue counters, loudness, where the audio threads are if the queue stalls |
 | `SDT_PROFILE` | off | Samples per second (e.g. `400`) for the built-in profiler; see Build |
@@ -86,9 +88,12 @@ python3 tools/symcheck.py <folder with the four .so files> --source source   # i
 Compiled shader pipelines are kept in `sdmc:/switch/sdt/cache/pipelines.bin`; delete it after changing the
 NVK driver.
 
-With `SDT_PROFILE` set, the port writes `prof.map` and `prof.bin` beside the `.nro`. Read them with
-`python3 tools/prof.py prof.map prof.bin sdt_nx.elf --libs <folder with the .so files>` (needs `pyelftools`)
-and the `.elf` of the same build.
+With `SDT_PROFILE` set, the port writes `prof.map`, `prof.bin` and `methods.txt` (the game's managed
+methods) beside the `.nro`. Read them with
+`python3 tools/prof.py prof.map prof.bin sdt_nx.elf --libs <folder with the .so files> --methods methods.txt`
+(needs `pyelftools`) and the `.elf` of the same build. To name the engine's own functions, add
+`--unity-syms libunity.sym.so` with the symbol file of the same engine build, which ships in the Unity
+Editor's Android support (`Variations/il2cpp/Release/Symbols/arm64-v8a`).
 
 `probe/` is a small test program that reports which code-memory permission changes the console
 allows and what the NVK driver offers.

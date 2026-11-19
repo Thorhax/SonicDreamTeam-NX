@@ -163,6 +163,8 @@ int bp_boot_and_run(void) {
     if (frames == 900) { extern void diag_log_cores(void); diag_log_cores(); }
     editbox_pump();                     /* a queued soft-input request: swkbd + result, between frames */
     { extern void sdt_tune_frame(unsigned); sdt_tune_frame((unsigned)frames); }   /* render scale override */
+    { extern void sdt_tune_probe(unsigned); sdt_tune_probe((unsigned)frames); }   /* SDT_PROFILE: timing settings */
+    { extern void sdt_tune_dump_methods(unsigned); sdt_tune_dump_methods((unsigned)frames); }
     { extern void sdt_video_frame(void); sdt_video_frame(); }   /* videos that could not open: finish them */
     { extern void sdt_input_frame(void); sdt_input_frame(); }   /* the controller, to the facade */
     android_native_feed_hid();          /* touch/stick/gyro/mouse -> bp_touch, BEFORE render */
@@ -387,20 +389,21 @@ int bp_boot_and_run(void) {
     diag_frame((int)frames);
     frames++;
     /* SDT: frame pacing, every 300 frames: average rate, and how many frames ran long */
-    { static u64 t_prev, t_win; static unsigned n, over33, over50; static double worst;
+    { static u64 t_prev, t_win; static unsigned n, over33, over50, b17, b25, b33; static double worst;
       const u64 t = armGetSystemTick();
       if (t_prev) {
         const double ms = (double)armTicksToNs(t - t_prev) / 1e6;
         if (ms > worst) worst = ms;
+        if (ms < 18.5) b17++; else if (ms < 28.0) b25++; else b33++;   /* one, about one and a half, two or more refreshes */
         if (ms > 33.9) over33++;
         if (ms > 50.0) over50++;
         if (++n >= 300) {
           const double secs = (double)armTicksToNs(t - t_win) / 1e9;
           unsigned ts_, tr_, tu_; extern void sdt_threads_stats(unsigned *, unsigned *, unsigned *);
           sdt_threads_stats(&ts_, &tr_, &tu_);
-          debugPrintf("[fps] %.1f fps over %u frames; worst %.0f ms; %u over 34 ms, %u over 50 ms | thread stops %u, resumes %u, not pausable %u\n",
-                      n / secs, n, worst, over33, over50, ts_, tr_, tu_);
-          n = 0; over33 = over50 = 0; worst = 0; t_win = t;
+          debugPrintf("[fps] %.1f fps over %u frames; worst %.0f ms; %u over 34 ms, %u over 50 ms; under 18.5 / 28 / longer: %u %u %u | thread stops %u, resumes %u, not pausable %u\n",
+                      n / secs, n, worst, over33, over50, b17, b25, b33, ts_, tr_, tu_);
+          n = 0; over33 = over50 = 0; b17 = b25 = b33 = 0; worst = 0; t_win = t;
         }
       } else t_win = t;
       t_prev = t;
