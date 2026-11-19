@@ -388,6 +388,7 @@ static void nx_applet_hook(AppletHookType hook, void *param) {
       debugPrintf("[applet] focus=%d\n", focused);
       bp_boot_focus(focused);
       if (focused) bp_boot_resume(); else bp_boot_pause();
+      debug_log_flush();   /* we may be suspended, or closed, right after this */
       break;
     }
     case AppletHookType_OnOperationMode:
@@ -639,13 +640,15 @@ int main(int argc, char *argv[]) {
   debugPrintf("[boot] CPU boost OFF (load path complete)\n");
 
   diag_thread_register(NULL, 1);          /* this is the engine main thread */
-  diag_set_name(NULL, "sdt-main");
+  diag_set_name(NULL, "UnityMain");   /* what UnityPlayer.java names the frame-loop thread */
   diag_watchdog_start();                  /* backtrace if a frame wedges */
 
 #if SDT_ENGINE_HOOKS
   bp_net_install_ca(&unity_mod);
   bp_tmclock_start();
 #endif
+
+  { extern void sdt_prof_start(void); sdt_prof_start(); }   /* SDT_PROFILE in env.txt */
 
   int rc = bp_boot_and_run();
 

@@ -46,7 +46,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 TARGET      := sdt_nx
 APP_TITLE   := Sonic Dream Team
 APP_AUTHOR  := Thorhax
-APP_VERSION := 0.1.0
+APP_VERSION := 0.1.1
 # The Mesa Horizon SDK: NVK (Vulkan) and, over it, EGL/GLES.
 NVK_SDK     ?= $(TOPDIR)/../work/mesa/opt/devkitpro/portlibs/switch
 export NVK_SDK
@@ -104,6 +104,7 @@ ASFLAGS  := -g $(ARCH)
 LDFLAGS   = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) \
             -Wl,--wrap,malloc -Wl,--wrap,calloc -Wl,--wrap,realloc \
             -Wl,--wrap,memalign -Wl,--wrap,free \
+            -Wl,--wrap,os_get_available_system_memory \
             -Wl,--allow-multiple-definition -Wl,--no-relax
 
 #---------------------------------------------------------------------------------

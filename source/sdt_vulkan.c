@@ -13,6 +13,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <switch.h>
 #include <vulkan/vulkan.h>
@@ -254,10 +255,84 @@ static void video_overlay(VkQueue queue, VkSwapchainKHR sc, uint32_t index) {
   if (!told) { told = 1; debugPrintf("[vk] video overlay: first frame copied to the %ux%u swapchain image\n", V.extent.width, V.extent.height); }
 }
 
+static void pc_maybe_save(void);
 static VkResult VKAPI_CALL b_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pi) {
   PFN_vkQueuePresentKHR real = (PFN_vkQueuePresentKHR)vkGetDeviceProcAddr(V.dev, "vkQueuePresentKHR");
   if (pi && pi->swapchainCount == 1) video_overlay(queue, pi->pSwapchains[0], pi->pImageIndices[0]);
+  pc_maybe_save();
   return real ? real(queue, pi) : VK_ERROR_EXTENSION_NOT_PRESENT;
+}
+
+/* ---- the pipeline cache, kept across runs -----------------------------------
+ * Compiling a pipeline costs up to ~100 ms on this console, and the game makes
+ * a few hundred. The engine would save its VkPipelineCache at onPause, but the
+ * port is suspended or closed without one. So the bridge does it: the engine's
+ * cache is created from <root>/cache/pipelines.bin when it brings no data of
+ * its own, and written back whenever it has grown (checked every 20 s from the
+ * present call, written on a thread of its own). The driver checks the file's
+ * header itself and ignores a cache from another driver build. */
+#include <pthread.h>
+#include "bp_root.h"
+static struct { VkPipelineCache cache; size_t saved; u64 checked; volatile int writing; void *buf; size_t len; } PC;
+
+static void pc_path(char *out, size_t n, const char *leaf) { snprintf(out, n, "%s/cache/%s", bp_game_root(), leaf); }
+
+static VkResult VKAPI_CALL b_CreatePipelineCache(VkDevice dev, const VkPipelineCacheCreateInfo *ci,
+                                                 const VkAllocationCallbacks *alloc, VkPipelineCache *out) {
+  VkPipelineCacheCreateInfo c = *ci;
+  void *data = NULL; long len = 0;
+  if (!PC.cache && ci->initialDataSize == 0) {
+    char p[700]; pc_path(p, sizeof p, "pipelines.bin");
+    FILE *f = fopen(p, "rb");
+    if (f) {
+      fseek(f, 0, SEEK_END); len = ftell(f); fseek(f, 0, SEEK_SET);
+      data = len > 0 && len < (64l << 20) ? malloc((size_t)len) : NULL;
+      if (data && fread(data, 1, (size_t)len, f) == (size_t)len) { c.initialDataSize = (size_t)len; c.pInitialData = data; }
+      fclose(f);
+    }
+  }
+  VkResult r = vkCreatePipelineCache(dev, &c, alloc, out);
+  if (r != VK_SUCCESS && c.pInitialData != ci->pInitialData) r = vkCreatePipelineCache(dev, ci, alloc, out);
+  if (r == VK_SUCCESS && !PC.cache) {
+    PC.cache = *out; PC.checked = armGetSystemTick();
+    size_t now = 0; vkGetPipelineCacheData(dev, *out, &now, NULL);
+    PC.saved = now;
+    debugPrintf("[vk] pipeline cache: %ld KB read from the card, %zu KB taken by the driver\n", len >> 10, now >> 10);
+  }
+  free(data);
+  return r;
+}
+
+static void *pc_write_main(void *arg) {
+  (void)arg;
+  char tmp[700], dst[700], dir[700];
+  pc_path(dir, sizeof dir, ""); dir[strlen(dir) - 1] = 0; mkdir(dir, 0777);
+  pc_path(tmp, sizeof tmp, "pipelines.tmp"); pc_path(dst, sizeof dst, "pipelines.bin");
+  FILE *f = fopen(tmp, "wb");
+  int ok = 0;
+  if (f) { ok = fwrite(PC.buf, 1, PC.len, f) == PC.len; fclose(f); }
+  if (ok) { remove(dst); ok = rename(tmp, dst) == 0; }
+  debugPrintf("[vk] pipeline cache: %zu KB written%s\n", PC.len >> 10, ok ? "" : "  FAILED");
+  free(PC.buf); PC.buf = NULL;
+  PC.writing = 0;
+  return NULL;
+}
+
+/* render thread, from the present call */
+static void pc_maybe_save(void) {
+  if (!PC.cache || PC.writing) return;
+  const u64 t = armGetSystemTick();
+  if (armTicksToNs(t - PC.checked) < 20000000000ull) return;
+  PC.checked = t;
+  size_t len = 0;
+  if (vkGetPipelineCacheData(V.dev, PC.cache, &len, NULL) != VK_SUCCESS || len <= PC.saved + 4096) return;
+  void *buf = malloc(len);
+  if (!buf) return;
+  if (vkGetPipelineCacheData(V.dev, PC.cache, &len, buf) < 0) { free(buf); return; }
+  PC.buf = buf; PC.len = len; PC.saved = len; PC.writing = 1;
+  pthread_t th; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 0x10000);
+  if (pthread_create(&th, &at, pc_write_main, NULL) != 0) { free(buf); PC.buf = NULL; PC.writing = 0; }
+  else pthread_detach(th);
 }
 
 static PFN_vkVoidFunction VKAPI_CALL b_GetInstanceProcAddr(VkInstance inst, const char *name);
@@ -271,6 +346,7 @@ static const struct { const char *name; void *fn; } g_over[] = {
   { "vkCreateSwapchainKHR",                   b_CreateSwapchainKHR },
   { "vkGetPhysicalDeviceSurfaceFormatsKHR",   b_GetPhysicalDeviceSurfaceFormatsKHR },
   { "vkQueuePresentKHR",                      b_QueuePresentKHR },
+  { "vkCreatePipelineCache",                  b_CreatePipelineCache },
   { "vkGetInstanceProcAddr",                  b_GetInstanceProcAddr },
   { "vkGetDeviceProcAddr",                    b_GetDeviceProcAddr },
 };
@@ -290,6 +366,7 @@ static PFN_vkVoidFunction VKAPI_CALL b_GetInstanceProcAddr(VkInstance inst, cons
 static PFN_vkVoidFunction VKAPI_CALL b_GetDeviceProcAddr(VkDevice dev, const char *name) {
   if (!strcmp(name, "vkCreateSwapchainKHR")) return (PFN_vkVoidFunction)b_CreateSwapchainKHR;
   if (!strcmp(name, "vkQueuePresentKHR")) return (PFN_vkVoidFunction)b_QueuePresentKHR;
+  if (!strcmp(name, "vkCreatePipelineCache")) return (PFN_vkVoidFunction)b_CreatePipelineCache;
   PFN_vkVoidFunction p = vkGetDeviceProcAddr(dev, name);
   if (!p) debugPrintf("[vk] vkGetDeviceProcAddr(%s) -> NULL\n", name);
   return p;
@@ -310,4 +387,26 @@ void *sdt_vk_dlsym(const char *name) {
   static int told;
   if (told < 40) { told++; debugPrintf("[vk] dlsym(%s): the driver has no such entry point\n", name); }
   return NULL;
+}
+
+/* ---- the driver's "how much memory is free" ---------------------------------
+ * Mesa's Horizon os_get_available_system_memory() calls mallinfo(), which walks
+ * every bin of the heap with the heap lock held. The engine asks for the memory
+ * budget (VK_EXT_memory_budget) many times a frame, so on the console the render
+ * thread spent a quarter of its time in that walk and the main thread a fifth
+ * of its time waiting for the lock (measured with SDT_PROFILE). The answer
+ * moves slowly: ask at most twice a second. (-Wl,--wrap in the Makefile.) */
+#include <stdbool.h>
+bool __real_os_get_available_system_memory(uint64_t *size);
+bool __wrap_os_get_available_system_memory(uint64_t *size) {
+  static uint64_t cached, at;
+  static bool ok;
+  const uint64_t now = armGetSystemTick();
+  if (!at || armTicksToNs(now - at) > 500000000ull) {
+    uint64_t v = 0;
+    const bool r = __real_os_get_available_system_memory(&v);
+    cached = v; ok = r; at = now ? now : 1;
+  }
+  if (size) *size = cached;
+  return ok;
 }

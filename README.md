@@ -4,7 +4,7 @@ A homebrew loader that runs the Android build of **Sonic Dream Team** (`com.sdt.
 natively on a Nintendo Switch with custom firmware. It ships **no game code and no game
 assets**: you supply the APK.
 
-Status: **0.1.0, first playable.** Boots to the menu, plays the intro video and the story
+Status: **0.1.1, first playable.** Boots to the menu, plays the intro video and the story
 cutscenes, and runs the first level with a controller. See [Known limits](#known-limits).
 
 ## How it works
@@ -57,6 +57,8 @@ Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
 | `SDT_RENDER_SCALE` | `1.0` | 3D render scale, 0.25 to 1.0 (`0` = the game's own, 0.5) |
 | `SDT_MEMTOTAL_MB` | `4096` | Memory reported to the game, which picks its quality class from it: 512 = lowest (30 fps cap), 4096 = middle (60 fps target), 8192 = highest |
 | `SDT_BUTTONS` | label | `position` maps buttons by position instead (the Switch's B becomes the game's A) |
+| `SDT_PSO_WARMUP` | on | `0` skips building the game's list of shader pipelines at boot |
+| `SDT_PROFILE` | off | Samples per second (e.g. `400`) for the built-in profiler; see Build |
 
 ## Known limits
 
@@ -77,6 +79,13 @@ make NVK_SDK=/path/to/sdk/opt/devkitpro/portlibs/switch            # with debug.
 make BUILD=build-release DEFINES=-DDEBUG_LOG=0 NVK_SDK=...          # release
 python3 tools/symcheck.py <folder with the four .so files> --source source   # imports nothing answers
 ```
+
+Compiled shader pipelines are kept in `sdmc:/switch/sdt/cache/pipelines.bin`; delete it after changing the
+NVK driver.
+
+With `SDT_PROFILE` set, the port writes `prof.map` and `prof.bin` beside the `.nro`. Read them with
+`python3 tools/prof.py prof.map prof.bin sdt_nx.elf --libs <folder with the .so files>` (needs `pyelftools`)
+and the `.elf` of the same build.
 
 `probe/` is a small test program that reports which code-memory permission changes the console
 allows and what the NVK driver offers.

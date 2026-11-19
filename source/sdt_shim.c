@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <switch.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include <SDL2/SDL.h>
 
@@ -57,6 +58,16 @@ void sdt_env_init(void) {
   setenv("COTL_LIBDIR", lib, 1);
   setenv("COTL_MAX_REFRESH", "60", 1);
   setenv("MONO_REFLECTION_SERIALIZER", "yes", 1);
+  /* The pipeline warm-up set, as MainActivity.pipelineStates() stages it: the
+   * APK's assets/pso/ copied to <files>/pso/, and COTL_GSC_DIR pointing there.
+   * The facade then creates those pipelines into the engine's pipeline cache
+   * at boot instead of the game compiling each one the first time it is drawn.
+   * SDT_PSO_WARMUP=0 in env.txt (read below) turns it off. */
+  { char dir[512], a[600], b[600];
+    snprintf(dir, sizeof dir, "%s/pso", g_files); mkdirs(dir);
+    snprintf(a, sizeof a, "sdmc:%s/index.txt", dir); snprintf(b, sizeof b, "sdmc:%s/set.gsc", dir);
+    if (sdt_apk_extract_asset("pso/index.txt", a) == 0 && sdt_apk_extract_asset("pso/set.gsc", b) == 0) setenv("COTL_GSC_DIR", dir, 1);
+    else debugPrintf("[sdt] no pipeline warm-up set in the APK\n"); }
   debugPrintf("[sdt] files %s, apk %s, libs %s\n", g_files, g_apk, lib);
   /* <root>/env.txt: extra KEY=VALUE lines, for the facade's own switches
    * (COTL_TRACE_FILES, COTL_PROBE, COTL_PERF, ...) without a rebuild. */
@@ -73,6 +84,7 @@ void sdt_env_init(void) {
     }
     fclose(ef);
   }
+  { const char *w = getenv("SDT_PSO_WARMUP"); if (w && !strcmp(w, "0")) unsetenv("COTL_GSC_DIR"); }
 }
 
 /* ------------------------------------------------------------------ AAudio -- */
@@ -202,7 +214,11 @@ static void tn_get(char *out) {
 }
 int sdt_prctl(int option, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5) {
   (void)a3; (void)a4; (void)a5;
-  if (option == 15 && a2) { if (cur_tid() != g_main_tid) tn_set((const char *)a2); return 0; }   /* PR_SET_NAME */
+  if (option == 15 && a2) {                                                                      /* PR_SET_NAME */
+    diag_set_name(NULL, (const char *)a2);          /* the watchdog and the profiler know threads by name */
+    if (cur_tid() != g_main_tid) tn_set((const char *)a2);
+    return 0;
+  }
   if (option == 16 && a2) { tn_get((char *)a2); return 0; }                                      /* PR_GET_NAME */
   return 0;
 }
@@ -247,6 +263,8 @@ DynLibFunction sdt_imports[] = {
   { "sleep", (uintptr_t)&x_sleep },
   { "strndup", (uintptr_t)&strndup },
   { "strtok", (uintptr_t)&strtok },
+  /* dlsym on "libz.so": the facade inflates the warm-up set's SPIR-V with it */
+  { "uncompress", (uintptr_t)&uncompress },
 };
 size_t sdt_imports_num = sizeof sdt_imports / sizeof sdt_imports[0];
 

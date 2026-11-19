@@ -884,3 +884,30 @@ int diag_pthread_tid(void *target_pthread) {
   }
   return 0;
 }
+
+/* Sampling profiler support (sdt_prof.c): the registered thread called `name`,
+ * stopped for an instant, and its pc, lr and two callers further up read while
+ * it is stopped. Never the caller itself, never a thread the collector holds.
+ * 1 = sampled. */
+int diag_sample_named(const char *name, uint64_t out[4]) {
+  for (int i = 0; i < DIAG_MAX_THREADS; i++) {
+    DiagThread *t = &g_threads[i];
+    if (!t->in_use || !t->handle || strcmp(t->name, name) || t->handle == threadGetCurHandle()) continue;
+    ThreadContext ctx;
+    if (R_FAILED(snap_pause(t))) return 0;
+    const Result gr = svcGetThreadContext3(&ctx, t->handle);
+    out[0] = out[1] = out[2] = out[3] = 0;
+    if (R_SUCCEEDED(gr)) {
+      out[0] = ctx.pc.x; out[1] = ctx.lr;
+      uint64_t fp = ctx.fp; const uint64_t sp = ctx.sp;
+      for (int k = 2; k < 4; k++) {
+        if (fp < sp || fp > sp + 0x200000 || (fp & 7)) break;
+        const uint64_t *f = (const uint64_t *)(uintptr_t)fp;   /* {caller's fp, return address} */
+        out[k] = f[1]; fp = f[0];
+      }
+    }
+    snap_resume(t);
+    return R_SUCCEEDED(gr);
+  }
+  return 0;
+}
