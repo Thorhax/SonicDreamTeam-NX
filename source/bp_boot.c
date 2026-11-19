@@ -267,7 +267,10 @@ int bp_boot_and_run(void) {
      * of 2981 MB. Once a second, what newlib says is left. If the map load is
      * the moment a large allocation starts failing somewhere that does not
      * check, this line shows the cliff. */
-    if (frames % 60 == 0) {
+    /* mallinfo() walks the whole heap with the heap lock held: about 4 ms on
+     * the console (measured with SDT_PROFILE), in the frame loop. So only
+     * every 600 frames, and only in a build that logs. */
+    if (DEBUG_LOG && frames % 600 == 0) {
       struct mallinfo mi = mallinfo();
       static size_t last_free;
       const size_t free_now = (size_t)mi.fordblks;

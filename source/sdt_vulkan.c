@@ -403,14 +403,15 @@ void *sdt_vk_dlsym(const char *name) {
  * budget (VK_EXT_memory_budget) many times a frame, so on the console the render
  * thread spent a quarter of its time in that walk and the main thread a fifth
  * of its time waiting for the lock (measured with SDT_PROFILE). The answer
- * moves slowly: ask at most twice a second. (-Wl,--wrap in the Makefile.) */
+ * moves slowly, and one walk takes about 5 ms during which nothing else can
+ * allocate: ask at most once every 5 seconds. (-Wl,--wrap in the Makefile.) */
 #include <stdbool.h>
 bool __real_os_get_available_system_memory(uint64_t *size);
 bool __wrap_os_get_available_system_memory(uint64_t *size) {
   static uint64_t cached, at;
   static bool ok;
   const uint64_t now = armGetSystemTick();
-  if (!at || armTicksToNs(now - at) > 500000000ull) {
+  if (!at || armTicksToNs(now - at) > 5000000000ull) {
     uint64_t v = 0;
     const bool r = __real_os_get_available_system_memory(&v);
     cached = v; ok = r; at = now ? now : 1;

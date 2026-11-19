@@ -59,7 +59,7 @@ Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
 | `SDT_BUTTONS` | label | `position` maps buttons by position instead (the Switch's B becomes the game's A) |
 | `SDT_PSO_WARMUP` | on | `0` skips building the game's list of shader pipelines at boot |
 | `SDT_VSYNC` | on | `0` presents without waiting for the display (the game's own choice; can tear) |
-| `SDT_BOOT_CONFIG` | graphics jobs | Engine start-up settings added to the game's `boot.config`, as `key=value;key=value`. The default is `gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1` (draw calls prepared on the worker threads); `none` adds nothing |
+| `SDT_BOOT_CONFIG` | graphics jobs, 3 workers | Engine start-up settings added to the game's `boot.config`, as `key=value;key=value`. The default is `gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1;job-worker-count=3` (draw calls prepared on the worker threads, and three of them); `none` adds nothing |
 | `SDT_SHADOW_DISTANCE` | the game's | How far real-time shadows are drawn, in metres (`0` = none) |
 | `SDT_AUDIO` | own | `sdl` uses SDL's audio device instead of the port's own output loop |
 | `SDT_AUDIO_TRACE` | off | `1` writes `audio.txt` once a second: queue counters, loudness, where the audio threads are if the queue stalls |

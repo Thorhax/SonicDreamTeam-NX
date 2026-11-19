@@ -593,12 +593,16 @@ static void *scanner_text(void){
   buf[n] = 0;
   /* Default: graphics jobs. The engine then prepares its draw calls on the job
    * workers instead of the frame-loop thread, which is the busiest thread and
-   * pinned to one core (measured in a heavy level: 44 -> 53 fps). "none" = only
-   * what the file says. */
+   * pinned to one core (measured in a heavy level: 44 -> 53 fps). And three
+   * job workers where the engine would start two (cores minus one): the frame
+   * loop spends part of each frame waiting for the workers (physics, the
+   * graphics jobs), and a third worker uses its core meanwhile; it never takes
+   * the core from the frame loop, whose priority is higher (50 -> 52 fps in
+   * the same level). "none" = only what the file says. */
   const char *extra = NULL;
   if (strstr(g_last_asset, "boot.config")) {
     extra = getenv("SDT_BOOT_CONFIG");
-    if (!extra) extra = "gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1";
+    if (!extra) extra = "gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1;job-worker-count=3";
     if (!strcmp(extra, "none") || !strcmp(extra, "0")) extra = NULL;
   }
   if (extra && strlen(extra) < 500) {

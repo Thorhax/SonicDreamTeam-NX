@@ -902,11 +902,31 @@ int diag_sample_named_n(const char *name, uint64_t *out, int n) {
     for (int k = 0; k < n; k++) out[k] = 0;
     if (R_SUCCEEDED(gr)) {
       out[0] = ctx.pc.x; out[1] = ctx.lr;
-      uint64_t fp = ctx.fp; const uint64_t sp = ctx.sp;
-      for (int k = 2; k < n; k++) {
+      uint64_t fp = ctx.fp; const uint64_t sp = ctx.sp; int used = 2;
+      for (int k = 2; k < n && k < 6; k++) {           /* a few: the rest is for the stack scan below */
         if (fp < sp || fp > sp + 0x200000 || (fp & 7)) break;
         const uint64_t *f = (const uint64_t *)(uintptr_t)fp;   /* {caller's fp, return address} */
-        out[k] = f[1]; fp = f[0];
+        out[k] = f[1]; used = k + 1;
+        if (f[0] <= fp) break;
+        fp = f[0];
+      }
+      /* The engine is built without frame pointers, so the chain usually ends
+       * after a step or two. Fill the remaining slots with words on the stack
+       * that point into the engine: return addresses, nearest first (and now
+       * and then one left behind by an earlier call). */
+      extern so_module unity_mod;
+      const uint64_t ulo = (uint64_t)(uintptr_t)unity_mod.load_virtbase, uhi = ulo + unity_mod.load_size;
+      MemoryInfo mi; u32 pi;
+      if (used < n && ulo && R_SUCCEEDED(svcQueryMemory(&mi, &pi, sp)) && (mi.perm & Perm_R)) {
+        const uint64_t top = mi.addr + mi.size;
+        const uint64_t *w = (const uint64_t *)(uintptr_t)((sp + 7) & ~7ull);
+        for (int i = 0; i < 1024 && used < n && (uint64_t)(uintptr_t)(w + i + 1) <= top; i++) {
+          const uint64_t v = w[i];
+          if (v < ulo || v >= uhi || (v & 3)) continue;
+          int dup = 0;
+          for (int k = 0; k < used; k++) if (out[k] == v) dup = 1;
+          if (!dup) out[used++] = v;
+        }
       }
     }
     snap_resume(t);
