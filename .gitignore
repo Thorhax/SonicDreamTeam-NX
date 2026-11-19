@@ -1,0 +1,14 @@
+# build output
+/build/
+/build-release/
+/nvk/
+*.log
+*.elf
+*.nacp
+*.nro
+*.map
+/probe/build/
+# logs from the console carry its ID; game files never belong here
+/logs/
+*.apk
+*.so

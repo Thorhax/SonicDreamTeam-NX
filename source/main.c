@@ -42,6 +42,7 @@
 #include "jni_fake.h"
 #include "libc_shim.h"
 #include "opensles.h"
+#include "sdt_port.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include "so_util.h"
@@ -91,7 +92,15 @@ static size_t heap_so_limit;
  * is heap newlib does not get, and newlib is where Unity's 512 MB Dynamic Heap
  * has to come from. The cost of under-reserving is so_load returning -3, which
  * load_module now reports by name along with how much room was left. */
-#define SO_REGION_BYTES (160u * 1024 * 1024)
+#define SO_REGION_BYTES (96u * 1024 * 1024)   /* SDT: libunity 26 MB + the facade 27 MB (mostly bss) */
+
+/* The facade's executable-capable arena (sdt_codemem.c): the iOS image is
+ * 76 MB mapped, the facade asks for 24 MB of room after it, and its trampoline
+ * pages come on top. */
+#define SDT_CODE_ARENA_BYTES (144u * 1024 * 1024)
+
+/* Address space for Unity's reservations (libc_shim's OC arena). */
+#define SDT_OC_WINDOW_GB 8u
 
 /* Provided by bp_boot.c / bp_gpuarena.c / bp_patches.c / bp_vsync.c */
 int  bp_boot_and_run(void);
@@ -307,7 +316,7 @@ static void remove_tree(const char *path) {
 
 static int load_module(so_module *mod, const char *name) {
   char path[768];
-  snprintf(path, sizeof path, "%s/%s", bp_game_root(), name);
+  snprintf(path, sizeof path, "%s/" SDT_LIB_DIR "/%s", bp_game_root(), name);
 
   debugPrintf("[boot] loading %s  (region %p, %u MB free)\n",
               path, heap_so_base, (unsigned)(heap_so_limit >> 20));
@@ -401,7 +410,6 @@ int main(int argc, char *argv[]) {
   /* FIRST. debug.log lives under the resolved root, so nothing may log before
    * this returns -- including anything that fails. */
   bp_resolve_game_root(argc, argv);
-  battd_video_init(bp_game_root());   /* reads videos/manifest.txt; starts nothing */
   bp_config_load();   /* config.txt: resolution, before anything sizes a buffer */
   /* Before anything can fault. __libnx_exception_handler needs a descriptor it
    * did not have to allocate: it runs with the process stopped and possibly
@@ -452,80 +460,36 @@ int main(int argc, char *argv[]) {
       debugPrintf("[mem] NRO text block: %p +0x%llx type=0x%x perm=%c%c%c\n",
                   (void *)(uintptr_t)mi.addr, (unsigned long long)mi.size, (unsigned)mi.type,
                   (mi.perm & Perm_R) ? 'R' : '-', (mi.perm & Perm_W) ? 'W' : '-', (mi.perm & Perm_X) ? 'X' : '-'); }
-  debugPrintf("[boot] === battd_nx (Bloons Adventure Time TD, Unity 2020.3.40f1 / IL2CPP) ===\n");
+  debugPrintf("[boot] === sdt_nx (Sonic Dream Team 1.10.3, Unity 2022.3.54f1, iOS image behind the facade) ===\n");
   bp_root_report(argc, argv);   /* first in the log: every run starts with this */
 
-  /* ---------------------------------------------------------------------
-   * ASSETS BEFORE NETWORK.
-   *
-   * This used to sit AFTER bp_net_init(), which brought nifm and the sockets up
-   * and then left them idle while the pack was opened -- an 83 MB read -- or, on
-   * a first boot, BUILT, which takes about a minute. The game then started with
-   * a network connection that had been sitting unused for that whole time.
-   *
-   * Nothing between here and the engine needs the network, so it now comes up
-   * last, immediately before the game can use it. The slow, purely local work
-   * happens first.
-   * ------------------------------------------------------------------- */
-  /* ---- asset pack ------------------------------------------------------
-   * This game ships 1,224 loose asset files (83 MB). Horizon is slow to open
-   * and stat files individually and fsdev holds a handle per open, so a tree
-   * that size makes loading crawl and puts real pressure on the handle table.
-   * The pack (from laracroftgo_nx, unchanged) concatenates the tree into one
-   * assets.nxpack plus an assets.nxidx index; libc_shim.c serves
-   * open/read/lseek/stat/fstat/fopen/opendir/readdir out of it. One fd for the
-   * whole asset tree, and a hash lookup instead of a directory walk.
-   *
-   * ORDER. Try the existing pack FIRST. Building is keyed on "no pack AND a
-   * loose tree is present", and the loose tree is removed once the pack is
-   * live -- otherwise every boot would see loose files and rebuild, and the SD
-   * card would carry both copies forever. */
+  /* The engine reads its data straight out of the APK (stored entries), and
+   * the facade maps the iOS image from the lib folder: nothing to unpack. */
+  sdt_env_init();
+  sdt_main_thread_is_this();
   {
-    char adir[768], probe[832];
-    snprintf(adir, sizeof adir, "%s/assets", bp_game_root());
-    snprintf(probe, sizeof probe, "%s/bin/Data/globalgamemanagers", adir);
-
-    asset_pack_open_existing(bp_game_root());
-
-    struct stat loose;
-    const int have_loose = (stat(probe, &loose) == 0 && S_ISREG(loose.st_mode));
-
-    if (!asset_pack_active() && have_loose) {
-      /* First boot: about a minute for 83 MB. A black screen for that long
-       * reads as a hang, so say what is happening. */
-      startup_status_begin("Optimizing game assets (first boot, about a minute)");
-      debugPrintf("[pack] building asset pack from %s\n", adir);
-      if (!asset_pack_build(adir, bp_game_root())) {
-        startup_status_end();
-        fatal_error("Could not optimize the extracted assets.\n%s\n\n"
-                    "The original files were kept, so you can\n"
-                    "simply try again.", asset_pack_error());
-      }
-      /* Only drop the loose tree once the pack is open and verified -- the
-       * build path re-reads and checksums what it wrote before returning. */
-      if (asset_pack_active() && stat(probe, &loose) == 0) {
-        startup_status_update("Removing unpacked asset files");
-        remove_tree(adir);
-      }
-      startup_status_end();
-    } else if (asset_pack_active() && have_loose) {
-      /* Both present: a re-stage after packing. The pack wins (it is what the
-       * shim serves); say so rather than silently ignoring the new files. */
-      debugPrintf("[pack] NOTE: assets.nxpack AND a loose assets/ tree are both "
-                  "present. The pack is being served. Delete assets.nxpack and "
-                  "assets.nxidx to rebuild from the loose tree.\n");
-    }
-
-    if (asset_pack_active())
-      debugPrintf("[pack] active: %u entries from assets.nxpack\n",
-                  (unsigned)asset_pack_entry_count());
-    else
-      debugPrintf("[pack] not active -- serving loose files from %s\n", adir);
+    struct stat st; char p[768];
+    snprintf(p, sizeof p, "%s/" SDT_APK_NAME, bp_game_root());
+    if (stat(p, &st) != 0)
+      fatal_error("%s is missing.\n\nCopy the game's APK there under that name, and the four\n"
+                  "files of its lib/arm64-v8a/ folder into %s/" SDT_LIB_DIR "/.", p, bp_game_root());
+    snprintf(p, sizeof p, "%s/" SDT_LIB_DIR "/" SDT_IMAGE_NAME, bp_game_root());
+    if (stat(p, &st) != 0)
+      fatal_error("%s is missing.\n\nCopy the four files of the APK's lib/arm64-v8a/ folder\ninto %s/" SDT_LIB_DIR "/.",
+                  p, bp_game_root());
   }
-
-  bp_net_init();   /* sockets + nifm; see bp_net.c. LAST, so the connection is
-                    * fresh when the engine starts -- see the note above. */
-  bp_savetool_run();   /* save.txt -> Profile.Save, before the engine reads it */
+  {
+    /* Serve "assets/..." (and "jar:file://...apk!/assets/...") out of the APK. */
+    char apk[768], idx[768];
+    snprintf(apk, sizeof apk, "%s/" SDT_APK_NAME, bp_game_root());
+    snprintf(idx, sizeof idx, "%s/apk.idx", bp_game_root());
+    startup_status_begin("Reading the game's file list (first boot only)");
+    const int ok = asset_pack_open_apk(apk, idx);
+    startup_status_end();
+    if (!ok) fatal_error("Could not read the asset list of %s:\n%s", apk, asset_pack_error());
+    debugPrintf("[pack] %u assets served from %s\n", (unsigned)asset_pack_entry_count(), apk);
+  }
+  bp_net_init();   /* sockets + nifm; see bp_net.c */
 
   /* Title override leaves the cwd at the .nro folder or at the SD root
    * depending on how it was launched, and the engine opens plenty of things by
@@ -544,33 +508,31 @@ int main(int argc, char *argv[]) {
   cpu_boost(1);
   debugPrintf("[boot] CPU boost ON for the load path\n");
 
-  /* Verify the staged tree BEFORE loading anything. A missing catalog.bin is a
-   * five-second fix if it is named now, and an unexplained hang forty seconds
-   * in if it is not. */
+  /* Unity reserves address space in 511 MB PROT_NONE blocks and commits little
+   * of it -- more than 2 GB of blocks at boot. Give libc_shim's lazily-committed
+   * arena a window in the code-memory address region and its pool. */
+  {
+    extern int oc_arena_init(void *window, size_t window_bytes, void *pool, size_t pool_bytes);
+    extern void *__real_memalign(size_t, size_t);
+    const size_t A = 256u << 20;
+    extern int oc_code_window;
+    void *win = NULL; size_t wsz = 0;
+    for (size_t want = (size_t)SDT_OC_WINDOW_GB << 30; want >= ((size_t)1 << 30) && !win; want >>= 1) {
+      virtmemLock();
+      uint8_t *w = virtmemFindCodeMemory(want + A, 0x200000);
+      if (w) { virtmemAddReservation(w, want + A); win = (void *)(((uintptr_t)w + A - 1) & ~(A - 1)); wsz = want; }
+      virtmemUnlock();
+    }
+    oc_code_window = 1;
+    const int ok = win && oc_arena_init(win, wsz, NULL, 0);
+    debugPrintf("[oc] window %p +%zu MB -> %s\n", win, wsz >> 20,
+                ok ? "armed" : "NOT armed (reservations will cost real memory)");
+  }
 
-  /* Verify the staged tree. With the pack live this checks the index; without
-   * it, the loose files. Either way a missing file is named now rather than
-   * surfacing as an unexplained hang forty seconds into the boot. */
-  /* Freeze which cache entries may be held in RAM. Must happen before the
-   * engine starts: anything written after this point is deliberately not
-   * eligible, which is what makes holding the rest safe. */
-  { extern void bp_ram_freeze_cache_set(const char *root);
-    bp_ram_freeze_cache_set(bp_game_root()); }
-
-  /* Loading held files happens here, on a low-priority thread, so no open()
-   * ever waits on an SD read of a whole file. */
-  { extern void bp_ram_load_all(void); bp_ram_load_all(); }
-
-  /* Started AFTER the bulk load, so the bulk load is not idle-gated against a
-   * game that has not started yet. From here it only picks up files that appear
-   * later, and those do wait for a quiet card. */
-  { extern void bp_ram_prefetch_start(void); bp_ram_prefetch_start(); }
-
-  if (bp_assets_init() < 0)
-    fatal_error("No assets found under %s.\n\n"
-                "Stage the game from your own APK:\n"
-                "  python3 tools/stage_sd.py base.apk split_config.arm64_v8a.apk -o out/battd\n"
-                "then copy out/battd/ next to the .nro.", bp_game_root());
+  if (sdt_cm_init(SDT_CODE_ARENA_BYTES) != 0)
+    fatal_error("Could not set up %u MB of code memory for the game image.\n\n"
+                "Launch by title override (hold R while starting a game),\nnot from the album.",
+                SDT_CODE_ARENA_BYTES >> 20);
 
   SDL_SetMainReady();
 
@@ -579,38 +541,21 @@ int main(int argc, char *argv[]) {
   if (load_module(&unity_mod,  BP_LIB_UNITY)  < 0) fatal_error("Could not load %s", BP_LIB_UNITY);
   if (load_module(&il2cpp_mod, BP_LIB_IL2CPP) < 0) fatal_error("Could not load %s", BP_LIB_IL2CPP);
 
-  /* Hand libc_shim the il2cpp mapping BEFORE anything can run engine code.
-   *
-   * pthread_kill is routed to pthread_kill_gc(), the Boehm GC stop-the-world
-   * bridge. libnx has no POSIX signals, so bdwgc's suspend/restart signals are
-   * never delivered and its threads never acknowledge -- GC_suspend_all then
-   * spins in usleep() forever waiting for acks. The bridge answers on their
-   * behalf by posting GC_suspend_ack_sem directly.
-   *
-   * It reads the ack semaphore and the two signal-number globals through
-   * g_il2cpp_base, and it refuses to dereference anything when that is zero.
-   * Leaving it unset is therefore SILENT: no [gc] line is ever printed, every
-   * pthread_kill is a no-op, and the first collection wedges the main thread in
-   * GC_suspend_all with nothing in the log to say why. That is exactly what
-   * happened -- the boot got as far as FMOD playing and then stopped, with the
-   * watchdog showing UnityMain parked in usleep under GC_suspend_all+0xb0.
-   *
-   * Set from load_virtbase, not load_base: the offsets in the bridge are
-   * virtual addresses within the mapped module. */
-  g_il2cpp_base = (uintptr_t)il2cpp_mod.load_virtbase;
-  g_il2cpp_size = il2cpp_mod.load_size;
-  debugPrintf("[gc] il2cpp base=%p size=%u MB (GC stop-the-world bridge armed)\n",
-              il2cpp_mod.load_virtbase, (unsigned)(il2cpp_mod.load_size >> 20));
-
   so_finalize(&main_mod);   so_flush_caches(&main_mod);
   so_finalize(&unity_mod);  so_flush_caches(&unity_mod);
   so_finalize(&il2cpp_mod); so_flush_caches(&il2cpp_mod);
   debugPrintf("[boot] modules finalized + flushed\n");
 
-  /* Patches go in after finalize (the pages are mapped and executable, and
-   * so_patch_code aliases them RW to write) and before any engine code runs.
-   * Each one verifies a guard word first; see bp_patches.c. */
+  /* The facade stops threads for the collector with a signal; emulate that
+   * against its thread table (sdt_shim.c). Needs the mapped module. */
+  sdt_threads_arm((uintptr_t)il2cpp_mod.load_virtbase, il2cpp_mod.load_size);
+
+  /* battd_nx's engine patches and managed hooks are offsets into Unity
+   * 2020.3.40f1 and into real IL2CPP output. None applies to 2022.3.54f1 or to
+   * the facade, so none is installed (SDT_ENGINE_HOOKS, config.h). */
+#if SDT_ENGINE_HOOKS
   bp_apply_patches();
+#endif
 
   /* MAIN-THREAD BIONIC TLS -- must precede any engine code. */
   static uint8_t main_tls[BIONIC_TLS_SIZE] __attribute__((aligned(16)));
@@ -666,53 +611,41 @@ int main(int argc, char *argv[]) {
     fn_jnionload il2cpp_onload =
         (fn_jnionload)so_try_find_addr_rx(&il2cpp_mod, "JNI_OnLoad");
     if (il2cpp_onload) {
-      debugPrintf("[boot] libil2cpp JNI_OnLoad(fake_vm)...\n");
-      il2cpp_onload(fake_vm, NULL);
+      /* The facade's JNI_OnLoad maps and links the iOS image and runs its
+       * initializers. Its anonymous maps in here must be able to turn
+       * executable in place. */
+      debugPrintf("[boot] facade JNI_OnLoad(fake_vm): loading the iOS image...\n");
+      sdt_cm_phase(1);
+      int jv = il2cpp_onload(fake_vm, NULL);
+      sdt_cm_phase(0);
+      install_bionic_tls(main_tls);
+      debugPrintf("[boot] facade JNI_OnLoad returned 0x%x\n", jv);
     } else {
       debugPrintf("[boot] libil2cpp JNI_OnLoad absent (managed JNI may fail)\n");
     }
   }
 
-  /* Resolve the vsync state block now that libunity is mapped and relocated. */
+#if SDT_ENGINE_HOOKS
   bp_vsync_init();
-
-  /* Managed hooks. These patch generated C# in libil2cpp, so they must go in
-   * after its init arrays have run (the code is there from load, but hooking
-   * before JNI_OnLoad would race the runtime bringing itself up) and before the
-   * first frame, since Time and Screen are read during the first scene load.
-   *
-   * Each verifies three guard words and skips itself on a mismatch, so a stale
-   * bp_managed.h costs the feature rather than corrupting an unrelated method. */
-  bp_time_install(&unity_mod);   /* libunity icall bindings */
-  bp_input_install(&unity_mod);   /* libunity icall bindings */
-  bp_screen_install(&unity_mod);   /* libunity icall bindings */
-  bp_physmem_install(&unity_mod);  /* art-quality gate: report config.txt memory_mb */
+  bp_time_install(&unity_mod);
+  bp_input_install(&unity_mod);
+  bp_screen_install(&unity_mod);
+  bp_physmem_install(&unity_mod);
   bp_prefs_install(&il2cpp_mod);
-  battd_il2cpp_install(&il2cpp_mod);   /* VideoPlayer::Play -> ffmpeg splash player */
-  battd_save_probe_install(&il2cpp_mod);  /* log the save password once */
-  /* Arm the GPU arena only HERE. Everything before this point -- module
-   * loading, relocation, the metadata read -- makes large page-aligned
-   * allocations that are not graphics buffers. cloverpit_nx records that
-   * arming it earlier reserved half a gigabyte for nothing and regressed the
-   * game to a frame-0 freeze. From here on, the only allocator making
-   * page-aligned requests of this size class is libdrm_nouveau. */
   bp_gpua_enable();
+#endif
 
   cpu_boost(0);
   debugPrintf("[boot] CPU boost OFF (load path complete)\n");
 
   diag_thread_register(NULL, 1);          /* this is the engine main thread */
-  diag_set_name(NULL, "battd-main");
+  diag_set_name(NULL, "sdt-main");
   diag_watchdog_start();                  /* backtrace if a frame wedges */
 
-  /* HTTPS trust. unitytls asks Android's KeyStore for roots over JNI and gets
-   * nothing here, so append a real CA bundle to its default list (ACPC's
-   * method). Without it every HTTPS request fails certificate verification. */
+#if SDT_ENGINE_HOOKS
   bp_net_install_ca(&unity_mod);
-
-  /* The TimeManager detour went in with the patches; its stall thread starts
-   * now that libunity is initialised (bp_tmclock.c). */
   bp_tmclock_start();
+#endif
 
   int rc = bp_boot_and_run();
 

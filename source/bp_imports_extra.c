@@ -48,6 +48,11 @@
 #include <sys/socket.h>
 #include <math.h>
 #include "so_util.h"   /* DynLibFunction */
+/* sdt_video.c: the data source the engine opens a clip with, and the port's own player */
+extern void *sdt_ams_new(void); extern void sdt_ams_delete(void *);
+extern void sdt_ams_set_userdata(void *, void *); extern void sdt_ams_set_read_at(void *, void *);
+extern void sdt_ams_set_get_size(void *, void *); extern void sdt_ams_set_close(void *, void *);
+extern void sdt_video_open(void *ds);
 #include "util.h"      /* debugPrintf -- the loader core's logger.
                         * NOT diag.h: that header exists but declares no
                         * printf-style logger, and there is no log_printf
@@ -96,25 +101,28 @@ static int     AMediaCodec_releaseOutputBuffer(void) { NOTSUP("AMediaCodec_relea
 static int     AMediaCodec_setOutputSurface(void) { NOTSUP("AMediaCodec_setOutputSurface"); return AMEDIA_ERROR_UNSUPPORTED; }
 static int     AMediaCodec_start(void) { NOTSUP("AMediaCodec_start"); return AMEDIA_ERROR_UNSUPPORTED; }
 static int     AMediaCodec_stop(void) { NOTSUP("AMediaCodec_stop"); return AMEDIA_ERROR_UNSUPPORTED; }
-static void    AMediaDataSource_delete(void) { NOTSUP("AMediaDataSource_delete"); }
-static void*   AMediaDataSource_new(void) { NOTSUP("AMediaDataSource_new"); return NULL; }
-static void    AMediaDataSource_setClose(void) { NOTSUP("AMediaDataSource_setClose"); }
-static void    AMediaDataSource_setGetSize(void) { NOTSUP("AMediaDataSource_setGetSize"); }
-static void    AMediaDataSource_setReadAt(void) { NOTSUP("AMediaDataSource_setReadAt"); }
-static void    AMediaDataSource_setUserdata(void) { NOTSUP("AMediaDataSource_setUserdata"); }
+static void    AMediaDataSource_delete(void *ds) { sdt_ams_delete(ds); }
+static void*   AMediaDataSource_new(void) { return sdt_ams_new(); }
+static void    AMediaDataSource_setClose(void *ds, void *f) { sdt_ams_set_close(ds, f); }
+static void    AMediaDataSource_setGetSize(void *ds, void *f) { sdt_ams_set_get_size(ds, f); }
+static void    AMediaDataSource_setReadAt(void *ds, void *f) { sdt_ams_set_read_at(ds, f); }
+static void    AMediaDataSource_setUserdata(void *ds, void *ud) { sdt_ams_set_userdata(ds, ud); }
 static bool    AMediaExtractor_advance(void) { NOTSUP("AMediaExtractor_advance"); return false; }
 static void    AMediaExtractor_delete(void) { NOTSUP("AMediaExtractor_delete"); }
 static int64_t AMediaExtractor_getSampleTime(void) { NOTSUP("AMediaExtractor_getSampleTime"); return -1; }
 static size_t  AMediaExtractor_getSampleTrackIndex(void) { NOTSUP("AMediaExtractor_getSampleTrackIndex"); return 0; }
 static size_t  AMediaExtractor_getTrackCount(void) { NOTSUP("AMediaExtractor_getTrackCount"); return 0; }
 static void*   AMediaExtractor_getTrackFormat(void) { NOTSUP("AMediaExtractor_getTrackFormat"); return NULL; }
-static void*   AMediaExtractor_new(void) { NOTSUP("AMediaExtractor_new"); return NULL; }
+/* SDT: a real object, so the engine goes on to setDataSource, is refused there,
+ * and raises VideoPlayer.errorReceived -- which the game's VideoPlayerWrapper
+ * handles. NULL here left the player waiting for ever. */
+static void*   AMediaExtractor_new(void) { static long dummy[8]; NOTSUP("AMediaExtractor_new"); return dummy; }
 static int     AMediaExtractor_readSampleData(void) { NOTSUP("AMediaExtractor_readSampleData"); return AMEDIA_ERROR_UNSUPPORTED; }
 static int     AMediaExtractor_seekTo(void) { NOTSUP("AMediaExtractor_seekTo"); return AMEDIA_ERROR_UNSUPPORTED; }
 static int     AMediaExtractor_selectTrack(void) { NOTSUP("AMediaExtractor_selectTrack"); return AMEDIA_ERROR_UNSUPPORTED; }
-static int     AMediaExtractor_setDataSource(void) { NOTSUP("AMediaExtractor_setDataSource"); return AMEDIA_ERROR_UNSUPPORTED; }
-static int     AMediaExtractor_setDataSourceCustom(void) { NOTSUP("AMediaExtractor_setDataSourceCustom"); return AMEDIA_ERROR_UNSUPPORTED; }
-static int     AMediaExtractor_setDataSourceFd(void) { NOTSUP("AMediaExtractor_setDataSourceFd"); return AMEDIA_ERROR_UNSUPPORTED; }
+static int     AMediaExtractor_setDataSource(void) { NOTSUP("AMediaExtractor_setDataSource"); sdt_video_open(NULL); return AMEDIA_ERROR_UNSUPPORTED; }
+static int     AMediaExtractor_setDataSourceCustom(void *ex, void *ds) { (void)ex; sdt_video_open(ds); return AMEDIA_ERROR_UNSUPPORTED; }
+static int     AMediaExtractor_setDataSourceFd(void) { NOTSUP("AMediaExtractor_setDataSourceFd"); sdt_video_open(NULL); return AMEDIA_ERROR_UNSUPPORTED; }
 static void    AMediaFormat_delete(void) { NOTSUP("AMediaFormat_delete"); }
 static bool    AMediaFormat_getFloat(void) { NOTSUP("AMediaFormat_getFloat"); return false; }
 static bool    AMediaFormat_getInt32(void) { NOTSUP("AMediaFormat_getInt32"); return false; }

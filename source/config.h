@@ -25,7 +25,9 @@
  *
  * Turn it back to 1 before reporting a problem. It is the only instrument this
  * port has, and every diagnosis in PORTING.md came out of it. */
-#define DEBUG_LOG        0
+#ifndef DEBUG_LOG            /* make DEFINES=-DDEBUG_LOG=0 for a release build */
+#define DEBUG_LOG        1
+#endif
 
 /* CRASH_DUMP is deliberately NOT tied to DEBUG_LOG.
  *
@@ -33,25 +35,27 @@
  * still wants a crash report -- "it crashed and there is nothing to read" is
  * the worst possible state to ship, and it is the state a DEBUG_LOG 0 build
  * was in. crash.log costs nothing until a thread actually faults. */
-#define CRASH_DUMP       0
+#define CRASH_DUMP       1
 #define DEBUG_JNI_TRACE  0
 #define TRACE_IO         0
 #define TRACE_MMAP       0
 
 /* ---- game files (the folder name is resolved at runtime) --------------- */
+/* 0: none of battd_nx's Unity 2020.3.40f1 patches and managed hooks (main.c). */
+#define SDT_ENGINE_HOOKS 0
 #define BP_LIB_MAIN   "libmain.so"
 #define BP_LIB_UNITY  "libunity.so"
 #define BP_LIB_IL2CPP "libil2cpp.so"
 #define BP_ASSET_DIR  "assets"
-#define GAME_HOME     "sdmc:/switch/battd"
-#define LOG_NAME      "sdmc:/switch/battd/debug.log"
+#define GAME_HOME     "sdmc:/switch/sdt"
+#define LOG_NAME      "sdmc:/switch/sdt/debug.log"
 
 /* ---- application identity ------------------------------------------------
  * Read from assets/crashlytics-build.properties and PlayerSettings. SDK and
  * service init compare the package name against their own config, and Unity
  * derives persistentDataPath from it, so these are not cosmetic. 2020.3 ships
  * no assets/bin/Data/unity_app_guid; storage follows the package name. */
-#define CS_PACKAGE       "com.ninjakiwi.btdadventuretime"
+#define CS_PACKAGE       "com.sdt.port"
 #define CS_VERSION_NAME  "1.7.7"
 #define CS_VERSION_CODE  2823
 #define CS_APP_GUID      ""
@@ -299,7 +303,7 @@ extern int bp_gpu_arena_mb;
  * FMOD patch writes into the engine (bp_patches.c). The game's own AudioManager
  * asks for a 512-frame DSP buffer at the system rate; 256 is the lineage's
  * known-good period and what the patch forces. */
-#define BP_AUDIO_DEVICE_RATE       24000
+#define BP_AUDIO_DEVICE_RATE       48000
 #define BP_AUDIO_FRAMES_PER_BUFFER 64
 #define BP_AUDIO_CALLBACK_FRAMES   1024
 #define BP_AUDIO_PERIOD_FRAMES     256
@@ -317,7 +321,7 @@ extern int bp_gpu_arena_mb;
  * MMAP_ARENA_ALIGN MUST equal BP_REGION_GRANULARITY_MB (bp_patch_granularity.h).
  * 64 MB is the lineage's known-good floor; 16 MB corrupted the Dynamic Heap.
  * libunity 18 MB + libil2cpp 48 MB mapped here. */
-#define MMAP_ARENA_ALIGN ((size_t)64 * 1024 * 1024)
+#define MMAP_ARENA_ALIGN ((size_t)256 * 1024 * 1024)   /* SDT: Unity 2022.3 unpatched, 256 MB regions */
 #ifndef LOAD_ADDRESS
 #define LOAD_ADDRESS 0xC0000000
 #endif
@@ -477,7 +481,7 @@ extern int bp_ram_cache_mb;      /* config.txt ram_cache, defaults to the above 
  * intro is a black screen for its duration, then the game continues. Requires
  * switch-ffmpeg; the Makefile checks and says so. The clips must be staged --
  * tools/stage_sd.py writes videos/ and videos/manifest.txt. */
-#define BATTD_VIDEO 1
+#define BATTD_VIDEO 0
 #define BATTD_VIDEO_MAX_W 1280
 #define BATTD_VIDEO_MAX_H 720
 #define BATTD_VIDEO_DECODE_THREADS 2

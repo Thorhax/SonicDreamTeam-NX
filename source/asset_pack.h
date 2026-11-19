@@ -31,3 +31,4 @@ void *asset_pack_opendir_path(const char *path);
 int asset_pack_dir_is(const void *dir);
 const char *asset_pack_readdir_path(void *dir, uint8_t *type, uint64_t *ino);
 int asset_pack_closedir_path(void *dir);
+int asset_pack_open_apk(const char *apk_path, const char *index_path);   /* SDT: the stored entries of the APK as the pack */

@@ -871,3 +871,16 @@ void diag_resume_all_gc_paused(void) {
     }
   }
 }
+
+/* The kernel thread id of a registered thread (what gettid() returns on it), or
+ * 0 when the thread is not one of ours. For pthread_gettid_np(). */
+int diag_pthread_tid(void *target_pthread) {
+  pthread_t want = (pthread_t)target_pthread;
+  for (int i = 0; i < DIAG_MAX_THREADS; i++) {
+    DiagThread *t = &g_threads[i];
+    if (!t->in_use || !pthread_equal(t->pth, want) || !t->handle) continue;
+    u64 tid = 0;
+    if (R_SUCCEEDED(svcGetThreadId(&tid, t->handle))) return (int)(tid & 0x7fffffff);
+  }
+  return 0;
+}

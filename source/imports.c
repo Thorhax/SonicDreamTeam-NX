@@ -1326,11 +1326,15 @@ static int g_combined_n = 0;
  * See bp_imports_extra.c. */
 extern DynLibFunction bp_imports_extra[];
 extern size_t         bp_imports_extra_num;
+/* Sonic Dream Team's facade: AAudio and a few libc strays (sdt_shim.c). */
+extern DynLibFunction sdt_imports[];
+extern size_t         sdt_imports_num;
 
 static void build_combined(void) {
   if (g_combined) return;
   g_combined_n = (int)dynlib_numfunctions + unity_dynlib_numfunctions
-               + (int)firebase_extra_numfunctions + (int)bp_imports_extra_num;
+               + (int)firebase_extra_numfunctions + (int)bp_imports_extra_num
+               + (int)sdt_imports_num;
   g_combined = malloc((size_t)g_combined_n * sizeof(DynLibFunction));
   size_t off = 0;
   memcpy(g_combined + off, dynlib_functions, dynlib_numfunctions * sizeof(DynLibFunction));
@@ -1343,6 +1347,8 @@ static void build_combined(void) {
   off += firebase_extra_numfunctions;
   memcpy(g_combined + off, bp_imports_extra,
          bp_imports_extra_num * sizeof(DynLibFunction));
+  off += bp_imports_extra_num;
+  memcpy(g_combined + off, sdt_imports, sdt_imports_num * sizeof(DynLibFunction));
 }
 
 /* Search the shim table by name -- used by dlsym() for the GLES/EGL/libc

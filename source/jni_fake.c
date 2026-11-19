@@ -1401,6 +1401,17 @@ static void *act_object(const FakeID *id, va_list va) {
 }
 
 static juint act_int(const FakeID *id, va_list va) {
+  /* SDT: the engine picks FMOD's OpenSL output (which opensles.c backs) only on
+   * a device that reports low-latency audio; otherwise it takes the Java
+   * AudioTrack path, which has no Java to drive it. */
+  if (!strcmp(id->name, "hasSystemFeature")) {
+    va_list c; va_copy(c, va);
+    const char *f = jni_string_utf(va_arg(c, void *));
+    va_end(c);
+    const int yes = f && (strstr(f, "audio.low_latency") || strstr(f, "audio.pro"));
+    debugPrintf("[sdt] hasSystemFeature(%s) -> %d\n", f ? f : "?", yes);
+    return (juint)yes;
+  }
   if (name_has(id->cls, "Handler") && name_has(id->name, "post")) {   /* post/postDelayed(Runnable) */
     post_runnable(va_arg(va, void *)); return 1;
   }
@@ -1534,7 +1545,49 @@ static void log_app_upcall(const FakeID *id) {
   debugPrintf("[jni] app upcall: %s.%s%s\n", id->cls, id->name, id->sig);
 }
 
+/* SDT: the system's trusted roots, the way unitytls asks Android for them:
+ * TrustManagerFactory.getTrustManagers()[0].getAcceptedIssuers()[i].getEncoded(). */
+#define SDT_CA_MAX 256
+static void *g_ca_obj[SDT_CA_MAX];
+static void *sdt_trust_dispatch(void *recv, const FakeID *id, int *handled) {
+  extern int bp_net_ca_count(void);
+  extern size_t bp_net_ca_der(int index, uint8_t *out, size_t cap);
+  *handled = 1;
+  if (strstr(id->cls, "TrustManagerFactory")) {
+    if (!strcmp(id->name, "getDefaultAlgorithm")) return jni_make_string("PKIX");
+    if (!strcmp(id->name, "getInstance")) return jni_make_object("javax/net/ssl/TrustManagerFactory");
+  }
+  if (!strcmp(id->name, "getTrustManagers")) {
+    void *arr = jni_make_object_array(1);
+    jni_object_array_set(arr, 0, jni_make_object("javax/net/ssl/X509TrustManager"));
+    return arr;
+  }
+  if (!strcmp(id->name, "getAcceptedIssuers")) {
+    int n = bp_net_ca_count(); if (n > SDT_CA_MAX) n = SDT_CA_MAX;
+    void *arr = jni_make_object_array(n);
+    /* one object per root: objects of the same label are the same object here */
+    static char label[SDT_CA_MAX][48];
+    for (int i = 0; i < n; i++) {
+      snprintf(label[i], sizeof label[i], "java/security/cert/X509Certificate#%d", i);
+      g_ca_obj[i] = jni_make_object(label[i]); jni_object_array_set(arr, i, g_ca_obj[i]);
+    }
+    debugPrintf("[net] X509TrustManager.getAcceptedIssuers() -> %d roots from the built-in bundle\n", n);
+    return arr;
+  }
+  if (!strcmp(id->name, "getEncoded") && recv) {
+    for (int i = 0; i < SDT_CA_MAX; i++) if (g_ca_obj[i] == recv) {
+      static uint8_t der[16384];
+      const size_t len = bp_net_ca_der(i, der, sizeof der);
+      uint8_t *d = malloc(len ? len : 1); memcpy(d, der, len);
+      return make_pri_array_adopt(d, (int)len, 1);
+    }
+  }
+  *handled = 0;
+  return NULL;
+}
+
 static void *dispatch_object(void *recv, const FakeID *id, va_list va) {
+  { int h_ = 0; void *r_ = sdt_trust_dispatch(recv, id, &h_); if (h_) return r_; }
   BP_SDK_OBJ_RET(id);   /* SDK policy at the shared core: instance, static (#define), nonvirtual, V and A all land here */
   jni_approx_arm();
   log_app_upcall(id);
@@ -1809,7 +1862,8 @@ static void *j_GetObjectClass(void *env, void *obj) {
   return intern_class("java/lang/Object");
 }
 static void *j_GetMethodID(void *env, void *cls, const char *name, const char *sig) {
-  (void)env; return get_id(class_name_of(cls), name ? name : "", sig ? sig : "");
+  (void)env;
+  return get_id(class_name_of(cls), name ? name : "", sig ? sig : "");
 }
 static void *j_GetFieldID(void *env, void *cls, const char *name, const char *sig) {
   (void)env; return get_id(class_name_of(cls), name ? name : "", sig ? sig : "");
@@ -2701,6 +2755,9 @@ static juint j_RegisterNatives(void *env, void *cls, void *methods, int n) {
   const JNINativeMethod_ *m = methods;
   int is_fmod = name_has(cn, "fmod") || name_has(cn, "FMOD");
   debugPrintf("[jni] RegisterNatives %s (%d methods)%s\n", cn, n, is_fmod ? "  <-- fmod" : "");
+  /* SDT: the facade's natives on the activity (gamepad, lifecycle, saves) */
+  if (m && name_has(cn, "com/sdt/port/"))
+    for (int i = 0; i < n; i++) if (m[i].name) bp_note_unity_native(m[i].name, m[i].fn);
   if (m && name_has(cn, "unity3d/player/UnityPlayer")) {
     for (int i = 0; i < n; i++) {
       if (!m[i].name) continue;

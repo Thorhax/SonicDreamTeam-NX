@@ -1076,3 +1076,105 @@ int asset_pack_closedir_path(void *opaque) {
   free(dir);
   return 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * SDT: the game's APK as the pack.
+ *
+ * Every entry of this APK is stored (not deflated), so "assets/<path>" inside
+ * it is a plain byte range of base.apk -- exactly what a pack entry is. The
+ * index is built from the zip's central directory; each entry's data offset
+ * comes from its local header (whose extra field is padding that differs from
+ * the central copy). The index is kept beside the APK, keyed on the APK's size,
+ * so only the first boot pays for reading 3,700 local headers.
+ * ------------------------------------------------------------------------- */
+typedef struct { char magic[8]; uint64_t apk_size; uint32_t count; uint32_t paths_size; } ApkIndexHeader;
+
+static uint16_t z16(const unsigned char *p) { return (uint16_t)(p[0] | p[1] << 8); }
+static uint32_t z32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static int apk_entry_compare(const void *left, const void *right) {
+  const BuildEntry *a = left, *b = right;
+  return strcmp(a->path, b->path);
+}
+
+int asset_pack_open_apk(const char *apk_path, const char *index_path) {
+  if (g_pack_fd >= 0) return 1;
+  int fd = open(apk_path, O_RDONLY);
+  if (fd < 0) { set_error("cannot open the APK"); return 0; }
+  const off_t apk_size = lseek(fd, 0, SEEK_END);
+  DiskEntry *entries = NULL; char *paths = NULL; size_t count = 0;
+
+  /* the saved index, if it is for this APK */
+  int ifd = open(index_path, O_RDONLY);
+  if (ifd >= 0) {
+    ApkIndexHeader h;
+    if (read(ifd, &h, sizeof h) == (ssize_t)sizeof h && !memcmp(h.magic, "SDTAPKI1", 8) &&
+        h.apk_size == (uint64_t)apk_size && h.count && h.count < 100000) {
+      entries = malloc((size_t)h.count * sizeof *entries);
+      paths = malloc(h.paths_size);
+      if (entries && paths &&
+          read(ifd, entries, (size_t)h.count * sizeof *entries) == (ssize_t)((size_t)h.count * sizeof *entries) &&
+          read(ifd, paths, h.paths_size) == (ssize_t)h.paths_size) count = h.count;
+      else { free(entries); free(paths); entries = NULL; paths = NULL; }
+    }
+    close(ifd);
+  }
+
+  if (!count) {
+    const size_t tail = apk_size < 0x10016 ? (size_t)apk_size : 0x10016;
+    unsigned char *t = malloc(tail);
+    long eocd = -1;
+    if (t && read_at(fd, t, tail, (uint64_t)apk_size - tail))
+      for (long i = (long)tail - 22; i >= 0; i--) if (z32(t + i) == 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) { free(t); close(fd); set_error("the APK has no zip directory"); return 0; }
+    const size_t n = z16(t + eocd + 10);
+    const uint32_t cdsize = z32(t + eocd + 12), cdoff = z32(t + eocd + 16);
+    free(t);
+    unsigned char *cd = malloc(cdsize);
+    BuildEntry *items = calloc(n ? n : 1, sizeof *items);
+    if (!cd || !items || !read_at(fd, cd, cdsize, cdoff)) { free(cd); free(items); close(fd); set_error("cannot read the APK's directory"); return 0; }
+    size_t kept = 0, paths_size = 0;
+    const unsigned char *p = cd, *end = cd + cdsize;
+    for (size_t i = 0; i < n && p + 46 <= end && z32(p) == 0x02014b50; i++) {
+      const uint16_t nl = z16(p + 28), xl = z16(p + 30), cl = z16(p + 32);
+      if (nl > 7 && !memcmp(p + 46, "assets/", 7) && z16(p + 10) == 0 && p[46 + nl - 1] != '/') {
+        unsigned char lh[30];
+        const uint32_t local = z32(p + 42);
+        if (read_at(fd, lh, 30, local) && z32(lh) == 0x04034b50) {
+          items[kept].path = malloc((size_t)nl - 7 + 1);
+          memcpy(items[kept].path, p + 46 + 7, (size_t)nl - 7); items[kept].path[nl - 7] = 0;
+          items[kept].size = z32(p + 24);
+          items[kept].offset = (uint64_t)local + 30 + z16(lh + 26) + z16(lh + 28);
+          paths_size += (size_t)nl - 7 + 1;
+          kept++;
+        }
+      }
+      p += 46 + nl + xl + cl;
+    }
+    free(cd);
+    qsort(items, kept, sizeof *items, apk_entry_compare);
+    entries = malloc((kept ? kept : 1) * sizeof *entries);
+    paths = malloc(paths_size ? paths_size : 1);
+    size_t po = 0;
+    for (size_t i = 0; entries && paths && i < kept; i++) {
+      const size_t len = strlen(items[i].path);
+      entries[i].offset = items[i].offset; entries[i].size = items[i].size;
+      entries[i].path_offset = (uint32_t)po; entries[i].path_length = (uint32_t)len;
+      memcpy(paths + po, items[i].path, len + 1); po += len + 1;
+    }
+    free_build_entries(items, kept);
+    if (!entries || !paths || !kept) { free(entries); free(paths); close(fd); set_error("no stored assets in the APK"); return 0; }
+    count = kept;
+    int ofd = open(index_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (ofd >= 0) {
+      ApkIndexHeader h; memset(&h, 0, sizeof h);
+      memcpy(h.magic, "SDTAPKI1", 8); h.apk_size = (uint64_t)apk_size; h.count = (uint32_t)count; h.paths_size = (uint32_t)po;
+      write_all(ofd, &h, sizeof h); write_all(ofd, entries, count * sizeof *entries); write_all(ofd, paths, po);
+      close(ofd);
+    }
+  }
+  g_entries = entries; g_paths = paths; g_entry_count = count; g_pack_fd = fd;
+  snprintf(g_pack_path, sizeof g_pack_path, "%s", apk_path);
+  g_error[0] = 0;
+  return 1;
+}

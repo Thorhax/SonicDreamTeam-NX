@@ -158,6 +158,9 @@ int bp_boot_and_run(void) {
   uint32_t last_stat = 0;
   while (appletMainLoop() && !jni_quit_requested) {
     editbox_pump();                     /* a queued soft-input request: swkbd + result, between frames */
+    { extern void sdt_tune_frame(unsigned); sdt_tune_frame((unsigned)frames); }   /* render scale override */
+    { extern void sdt_video_frame(void); sdt_video_frame(); }   /* videos that could not open: finish them */
+    { extern void sdt_input_frame(void); sdt_input_frame(); }   /* the controller, to the facade */
     android_native_feed_hid();          /* touch/stick/gyro/mouse -> bp_touch, BEFORE render */
     unsigned char alive = U.render(fake_env, fake_unityplayer_thiz);
     battd_il2cpp_pump();                /* splash video: end the clip on THIS thread.
@@ -262,7 +265,7 @@ int bp_boot_and_run(void) {
       struct mallinfo mi = mallinfo();
       static size_t last_free;
       const size_t free_now = (size_t)mi.fordblks;
-      if (frames == 0 || free_now < last_free / 2 || free_now < (128u << 20)) {
+      if (frames == 0 || frames % 600 == 0 || free_now < last_free / 2 || free_now < (128u << 20)) {
         /* Break the 2.5 GB down. Most of "in use" is the port's own up-front
          * reservations, not Unity: the mmap arena (Unity's Dynamic Heap lives
          * inside it), the GPU arena, the resident cache image, the 83 MB pack.
@@ -286,6 +289,9 @@ int bp_boot_and_run(void) {
          * settles whether the pool can still grow or whether 2981 is a figure
          * newlib never really got. If arena stops climbing well below 2981,
          * the ceiling is sbrk, not Unity's appetite. */
+        { size_t l_, p_, g_, pa_; int r_; extern void bp_oc_stats(size_t*,size_t*,size_t*,size_t*,int*);
+          bp_oc_stats(&l_, &p_, &g_, &pa_, &r_);
+          debugPrintf("[mem] engine commits: %zu MB live in %d runs (peak %zu), %zu MB given back, %zu MB of partial give-backs kept\n", l_, r_, p_, g_, pa_); }
         debugPrintf("[mem] allocator pool %zu MB from sbrk (top chunk %zu MB, %zu free) "
                     "of the %d MB newlib was granted -- %s\n",
                     (size_t)mi.arena >> 20, (size_t)mi.keepcost >> 20, free_now >> 20,
@@ -364,7 +370,26 @@ int bp_boot_and_run(void) {
     port_frame_tick();
     diag_frame((int)frames);
     frames++;
-    if (frames <= 5 || (frames % 60) == 0)
+    /* SDT: frame pacing, every 300 frames: average rate, and how many frames ran long */
+    { static u64 t_prev, t_win; static unsigned n, over33, over50; static double worst;
+      const u64 t = armGetSystemTick();
+      if (t_prev) {
+        const double ms = (double)armTicksToNs(t - t_prev) / 1e6;
+        if (ms > worst) worst = ms;
+        if (ms > 33.9) over33++;
+        if (ms > 50.0) over50++;
+        if (++n >= 300) {
+          const double secs = (double)armTicksToNs(t - t_win) / 1e9;
+          unsigned ts_, tr_, tu_; extern void sdt_threads_stats(unsigned *, unsigned *, unsigned *);
+          sdt_threads_stats(&ts_, &tr_, &tu_);
+          debugPrintf("[fps] %.1f fps over %u frames; worst %.0f ms; %u over 34 ms, %u over 50 ms | thread stops %u, resumes %u, not pausable %u\n",
+                      n / secs, n, worst, over33, over50, ts_, tr_, tu_);
+          n = 0; over33 = over50 = 0; worst = 0; t_win = t;
+        }
+      } else t_win = t;
+      t_prev = t;
+    }
+    if (frames <= 5 || (frames % 600) == 0)
       debugPrintf("[boot] frame %llu rendered (alive=%d)\n", (unsigned long long)frames, (int)alive);
   }
   debugPrintf("[boot] leaving frame loop after %llu frames (quit=%d)\n",

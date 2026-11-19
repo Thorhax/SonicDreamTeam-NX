@@ -18,7 +18,8 @@
 #include <dirent.h>      /* File.listFiles */
 #include <errno.h>
 
-#include "jni_fake.h"   /* jni_note_approx: the approximation ledger */
+#include "jni_fake.h"
+#include "sdt_port.h"   /* jni_note_approx: the approximation ledger */
 #include "unity_jni.h"
 #include "util.h"
 
@@ -167,6 +168,8 @@ static int is_uh(void *p,int kind){ UHandle*h=p; return h && h->tag==UJ_TAG && h
 static void asset_path(char *out,size_t n,const char *name){
   while (name && (name[0]=='/' )) name++;
   snprintf(out,n,"%s/%s",g_assets,name?name:"");
+  /* SDT: the assets are inside the APK; copy this one out on first use */
+  if (name && *name) sdt_apk_extract_asset(name, out);
 }
 
 /* Path handed to *managed* code (persistentDataPath / dataPath via the Context
@@ -780,14 +783,14 @@ void *unity_dispatch_object(void *recv, const void *id_, va_list va){ const stru
     if (has(m,"getApplicationInfo")) return jni_make_object("android/content/pm/ApplicationInfo");
     /* path getters -> REAL File handles under our staged dir, so both
      * getAbsolutePath() and later mkdirs()/exists()/listFiles() work. */
-    if (has(m,"getFilesDir"))          return uh_file_join(managed_root(), "files");
+    if (has(m,"getFilesDir"))          return uh_file_join(managed_root(), SDT_FILES_DIR);
     if (has(m,"getCacheDir"))          return uh_file_join(managed_root(), "cache");
     if (has(m,"getDataDir"))           return uh_file(managed_root());
     if (has(m,"getExternalFilesDir")) {              /* (String type|null) */
       void *type = va_arg(va, void *);
       const char *t = jni_string_utf(type);
       if (t && *t) { char b[512]; snprintf(b, sizeof b, "files/%s", t); return uh_file_join(managed_root(), b); }
-      return uh_file_join(managed_root(), "files");
+      return uh_file_join(managed_root(), SDT_FILES_DIR);
     }
     if (has(m,"getExternalCacheDir"))  return uh_file_join(managed_root(), "cache");
     if (has(m,"getObbDir"))            return uh_file_join(managed_root(), "obb");
@@ -795,7 +798,7 @@ void *unity_dispatch_object(void *recv, const void *id_, va_list va){ const stru
     /* Clone Hero's real package id. The inherited value was Zookeeper's; the
      * game may fold this into paths (Android/data/<pkg>/) or pref namespaces. */
     if (has(m,"getPackageName")) return jni_make_string(CS_PACKAGE);   /* config.h: this game, not the layer's donor */
-    if (has(m,"getPackageCodePath")||has(m,"getPackageResourcePath")) return jni_make_string(managed_root());
+    if (has(m,"getPackageCodePath")||has(m,"getPackageResourcePath")) return jni_make_string(sdt_apk_path());   /* the engine opens the APK itself */
     if (has(m,"getAssets")) return jni_make_object("AssetManager");
     if (has(m,"getResources")) return jni_make_object("Resources");
     if (has(m,"getSystemService")) return jni_make_object("Service");

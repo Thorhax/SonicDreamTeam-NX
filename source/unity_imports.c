@@ -7,6 +7,7 @@
  * benign stubs for Android/Linux-only calls the game does not actually need.
  * Resolved as a second table by crx_resolve_imports().
  */
+#include "sdt_port.h"
 #include <stdint.h>
 #include "bp_net.h"   /* bpn_inet_ntop */
 #include <stddef.h>
@@ -85,7 +86,9 @@ static long z_prctl(int option, unsigned long a2, unsigned long a3,
   if (option == Z_PR_SET_NAME && a2) diag_set_name(NULL, (const char *)a2);
   return 0;
 }
+int sdt_pthread_setname_np(pthread_t t, const char *name);
 static int z_pthread_setname_np(void *thread, const char *name){
+  sdt_pthread_setname_np((pthread_t)thread, name);
   diag_set_name(thread, name);
   return 0;
 }
@@ -263,7 +266,7 @@ DynLibFunction unity_dynlib_functions[] = {
   { "memrchr", (uintptr_t)&z_memrchr },
   { "modf", (uintptr_t)&modf },
   { "modff", (uintptr_t)&modff },
-  { "prctl", (uintptr_t)&z_prctl },
+  { "prctl", (uintptr_t)&sdt_prctl },   /* SDT: thread names matter to the facade */
   { "pthread_atfork", (uintptr_t)&z_stub0 },
   { "pthread_attr_getstack", (uintptr_t)&z_pthread_attr_getstack },
   { "pthread_condattr_destroy", (uintptr_t)&z_stub0 },

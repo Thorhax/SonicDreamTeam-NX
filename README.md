@@ -1,94 +1,99 @@
-# Bloons Adventure Time TD — Nintendo Switch port (Unity 2020.3 / IL2CPP wrapper)
+# Sonic Dream Team — Nintendo Switch port (Unity 2022.3 wrapper)
 
-This is a native wrapper / loader that runs the original ARM64 Android build of
-**Bloons Adventure Time TD** v1.7.7 on Switch homebrew. It contains no game code and no
-game assets — it loads the game's own libraries and recreates, natively, the
-thin Android/JNI layer the Unity engine expects.
+A homebrew loader that runs the Android build of **Sonic Dream Team** (`com.sdt.port` 1.10.3)
+natively on a Nintendo Switch with custom firmware. It ships **no game code and no game
+assets**: you supply the APK.
 
-## Install & run
+Status: **0.1.0, first playable.** Boots to the menu, plays the intro video and the story
+cutscenes, and runs the first level with a controller. See [Known limits](#known-limits).
 
-```
-sdmc:/switch/battd
-├── battd_nx.nro
-├── libmain.so  libunity.so  libil2cpp.so   <- from your APK: lib/arm64-v8a/
-├── cursor.png                              <- optional
-├── assets/                                 <- the APKs' assets/, merged
-└── videos/                                 <- the splash clips + manifest.txt
-```
+## How it works
 
-Launch via **title override** (hold R while starting an installed game) or a
-forwarder. Applet (album) mode doesn't have enough memory.
+The Android build is unusual: its `libunity.so` is the stock Android Unity 2022.3.54f1 player,
+but its `libil2cpp.so` is a small layer that loads the game's **iOS** code image
+(`libUnityFramework.so`, a Mach-O) and answers its Darwin calls. It renders with Vulkan only.
 
-**The first launch takes a few minutes and needs an internet connection.** It
-packs the 1,224 loose asset files into one archive (about a minute, and it says
-so on screen), then the game downloads roughly 244 MB of content. Once all of it
-is cached the game starts offline — see `online` under Settings.
+This port loads those libraries with a `.so` loader and stands in for Android:
 
-Optionally drop a `cursor.png` (up to 64×64, transparency respected, top-left
-pixel is the hotspot) in the same folder to replace the on-screen cursor with
-your own.
+| Part | File | What it does |
+|---|---|---|
+| Vulkan | `source/sdt_vulkan.c` | Answers `dlopen("libvulkan.so")` with the statically linked Mesa NVK driver; turns the Android surface into the Switch's; lists sRGB surface formats |
+| Executable memory | `source/sdt_codemem.c` | Lets the layer map the iOS image writable and then make it executable in place, which Horizon does not allow directly |
+| Engine memory | `source/libc_shim.c` | Unity's 511 MB address-space reservations, committed on demand from the heap |
+| Layer support | `source/sdt_shim.c` | Environment variables, AAudio, thread names, thread suspension by signal (for the garbage collector) |
+| Assets | `source/asset_pack.c` | Serves `assets/...` straight out of the APK (its entries are stored, not compressed) |
+| Controller | `source/sdt_input.c` | Feeds the pad to the layer's own gamepad interface |
+| Video | `source/sdt_video.c` | Plays the intro with FFmpeg and draws it over the swapchain image |
+| Tuning | `source/sdt_tune.c` | Full 720p render scale |
+
+It is a fork of [battd_nx](https://github.com/ChanseyIsTheBest/battd_nx) (MIT), which provides the
+loader, the fake JNI layer and the libc shims.
+
+## Install
+
+You need a Switch with Atmosphère and the game's APK (`sdt-1.10.3.apk`).
+
+1. Make the folder `sdmc:/switch/sdt/` and copy `sdt_nx.nro` into it.
+2. Copy the APK there as `base.apk`, unmodified.
+3. Open the APK as a zip and copy the four files of `lib/arm64-v8a/` into `sdmc:/switch/sdt/lib/`:
+   `libmain.so`, `libunity.so`, `libil2cpp.so`, `libUnityFramework.so`.
+4. Start it with **title override**: hold R while launching an installed game to open the
+   homebrew menu, then run `sdt_nx`. It does not have enough memory in album (applet) mode.
+
+The first boot builds `apk.idx` (a list of the APK's files) and takes a little longer. Saves go
+to `sdmc:/switch/sdt/com.sdt.port/files/`.
 
 ## Controls
 
-| Input | Action |
-| --- | --- |
-| Touchscreen | Tap (handheld) |
-| **+** | Toggle the on-screen cursor |
-| **–** | Toggle gyro pointing (tilt/turn the controller to aim) |
-| Left stick | Move the cursor |
-| **L** / **R** | Recenter the cursor to the middle of the screen (helps gyro aiming) |
-| **A** / **ZR** / **ZL** | Tap / confirm (ZL and ZR let you play one-handed) |
-| D-pad up / down | Adjust sensitivity of whatever is driving the cursor |
-
-The cursor is on by default when docked and off in handheld; **+** overrides
-either way. A USB mouse works in both modes: move to control the cursor,
-left-click to tap, and use the scroll wheel to change sensitivity — gyro turns
-itself off while a mouse is connected. Your stick, mouse and gyro sensitivities
-are remembered in `pointer.cfg` automatically after in-game adjustment.
+The game shows Xbox button pictures. Buttons are mapped by **label**: a prompt showing "A" means
+the Switch's A button. A / B / + skips the intro video.
 
 ## Settings
 
-`config.txt` is written next to the `.nro` on first launch, with the options
-documented inline:
+Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
 
+| Name | Default | Meaning |
+|---|---|---|
+| `SDT_RENDER_SCALE` | `1.0` | 3D render scale, 0.25 to 1.0 (`0` = the game's own, 0.5) |
+| `SDT_MEMTOTAL_MB` | `4096` | Memory reported to the game, which picks its quality class from it: 512 = lowest (30 fps cap), 4096 = middle (60 fps target), 8192 = highest |
+| `SDT_BUTTONS` | label | `position` maps buttons by position instead (the Switch's B becomes the game's A) |
+
+## Known limits
+
+- Measured only on an overclocked console (CPU about 1785 MHz, GPU 768 MHz): about 50 to 60 fps in
+  the first level at 720p. The main thread is the limit, so stock clocks will be slower; try
+  `SDT_MEMTOTAL_MB=512` there.
+- Not yet tested: playing with no network, docked mode, sleep and resume, anything past the
+  first level, and whether progress resumes after finishing a level.
+- Game Center features (leaderboards, cloud saves) do not exist here.
+
+## Build
+
+Needs devkitA64 with libnx, `switch-sdl2 switch-zlib switch-libpng switch-libexpat switch-libzstd
+switch-ffmpeg`, and the Mesa Horizon SDK (NVK), 26.2.4 or later:
+
+```sh
+make NVK_SDK=/path/to/sdk/opt/devkitpro/portlibs/switch            # with debug.log
+make BUILD=build-release DEFINES=-DDEBUG_LOG=0 NVK_SDK=...          # release
+python3 tools/symcheck.py <folder with the four .so files> --source source   # imports nothing answers
 ```
-resolution  = 1280    # 1280 to 1920: 1280x720 up to 1920x1080
-ui_scale    = 320     # screen density; this picks the 2D art quality
-art_quality = 2       # 2 = best, or "auto" to let the game decide
-online      = false   # once cached: false plays offline, true keeps updating
-memory_mb   = 2048    # RAM reported to the game
-```
 
-## Save editing
-
-`save.txt` is written on first launch with every option commented out. Remove
-the `#` in front of a line to make changes that are applied next boot.
-
-## Building
-
-Requires devkitPro with the `switch-dev` group plus these portlibs:
-
-```
-pacman -S switch-dev
-pacman -S switch-mesa switch-libdrm_nouveau switch-sdl2 switch-libpng switch-zlib switch-ffmpeg
-
-export DEVKITPRO=/opt/devkitpro
-make                        # -> battd_nx.nro
-```
-
-Rebuilding `libdrm_nouveau` with `libdrm_nouveau-astc-chipset-fix.patch` is
-strongly recommended; without it ASTC textures are software-decoded and the
-symptom is a black screen with working audio.
+`probe/` is a small test program that reports which code-memory permission changes the console
+allows and what the NVK driver offers.
 
 ## Credits
 
-The loader/shim infrastructure (so_util, libc_shim, jni_fake, unity_jni,
-opensles, nx_pointer, diagnostics) derives from the open-source Switch
-`.so`-loader lineage — Andy Nguyen, fgsfds and ChanseyIsTheBest, building on
-TheOfficialFloW's Vita/Switch loader tradition — reaching this project via the
-Bloons Pop port, with the JNI layer and GC bridge from Daggerfall Unity,
-networking from Animal Crossing: Pocket Camp, the engine clock from Bad Piggies,
-the keyboard from Daggerfall Unity and PvZ Fusion, the asset packer from Lara
-Croft GO, the splash-video player from CloverPit, and the save editor design
-from Papa Pear Saga via Bloons Pop. All MIT-licensed. Thanks to everyone in that
-lineage for making this approach possible.
+- [battd_nx](https://github.com/ChanseyIsTheBest/battd_nx) by ChanseyIsTheBest and the Switch
+  `.so`-loader lineage it descends from (TheFloW, fgsfds, Rinnegatamante and others; see `LICENSE`).
+- The Mesa NVK driver and its Horizon port; FFmpeg; SDL2; libnx and devkitPro.
+- The author of the Android conversion of the game, whose layer this port runs.
+
+## Disclaimer
+
+Not affiliated with or endorsed by SEGA, Hardlight, Apple, Nintendo or Unity. Sonic Dream Team is
+© SEGA. This repository contains none of the game; use it only with a copy you are entitled to use.
+
+## License
+
+The source is MIT (`LICENSE`). The built `.nro` statically links the Mesa NVK driver and FFmpeg,
+whose own licences (including GPL terms) apply to the binary.

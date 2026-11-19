@@ -1,6 +1,10 @@
 MIT License
 
+Copyright (c) 2026 Thorhax (the Sonic Dream Team port: source/sdt_*, probe/, tools/)
 Copyright (c) 2026 bloonspop_nx contributors
+
+SonicDreamTeam-NX is a fork of battd_nx by ChanseyIsTheBest (MIT), whose own
+lineage follows.
 
 This wrapper forks bouncemasters_nx (MIT), adopts the portrait presentation
 from clayjam_nx (MIT), the networking approach from acpc_nx (MIT) and the
@@ -12,8 +16,15 @@ descends from the open-source Switch .so-loader lineage by Andy Nguyen
 retain their upstream notices. data/cacerts.pem is the Mozilla CA certificate
 bundle as shipped by acpc_nx (MPL-2.0).
 
-This project contains NO game code or assets. Bloons Pop is (c) Ninja Kiwi and
-is not covered by this license. Unity is (c) Unity Technologies.
+This project contains NO game code or assets. Sonic Dream Team is (c) SEGA and
+is not covered by this license; Bloons Pop is (c) Ninja Kiwi. Unity is (c)
+Unity Technologies.
+
+The built .nro statically links other people's libraries under their own
+licences, which apply to the binary and not to this source: the Mesa NVK
+driver for Horizon (Mesa's licences; its Horizon port states GPL-2.0-or-later
+for its new files), FFmpeg (LGPL-2.1-or-later or GPL, as built by devkitPro),
+SDL2 (zlib) and libnx (ISC).
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

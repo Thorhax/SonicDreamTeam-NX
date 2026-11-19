@@ -499,6 +499,31 @@ static void install_verify_hook(so_module *unity) {
 #endif
 }
 
+/* SDT: the built-in bundle one certificate at a time, as DER, for the fake
+ * X509TrustManager (jni_fake.c). The engine asks Java for the system's trusted
+ * roots and appends each one itself, so no engine offsets are involved. */
+size_t bp_net_ca_der(int index, uint8_t *out, size_t cap) {
+  const char *p = (const char *)cacerts_pem, *e = p + (size_t)cacerts_pem_size;
+  for (int i = 0;; i++) {
+    const char *s = mem_find(p, e, "-----BEGIN CERTIFICATE-----");
+    if (!s) return 0;
+    s += 27;
+    const char *q = mem_find(s, e, "-----END CERTIFICATE-----");
+    if (!q) return 0;
+    if (i == index) return b64_decode(s, q, out, cap);
+    p = q + 25;
+  }
+}
+int bp_net_ca_count(void) {
+  const char *p = (const char *)cacerts_pem, *e = p + (size_t)cacerts_pem_size;
+  int n = 0;
+  for (;;) {
+    const char *s = mem_find(p, e, "-----BEGIN CERTIFICATE-----");
+    if (!s) return n;
+    n++; p = s + 27;
+  }
+}
+
 /* An SD-card bundle overrides the built-in one: <root>/cacert.pem. */
 static uint8_t *load_sd_bundle(size_t *len) {
   char path[600];

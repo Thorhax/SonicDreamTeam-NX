@@ -41,7 +41,7 @@ const char *bp_log_path(void)  { return g_log; }
 static int has_libmain(const char *dir) {
   char p[600];
   struct stat st;
-  snprintf(p, sizeof p, "%s/libmain.so", dir);
+  snprintf(p, sizeof p, "%s/lib/libmain.so", dir);   /* SDT_LIB_DIR */
   return stat(p, &st) == 0;
 }
 
@@ -58,13 +58,9 @@ static void adopt(const char *dir) {
  * plain name and a couple of casings: people name the folder after the game,
  * not after the port. */
 static const char *const CANDIDATES[] = {
-  "sdmc:/switch/battd",
-  "sdmc:/switch/battd_nx",
-  "sdmc:/switch/BATTD",
-  "sdmc:/switch/BloonsAdventureTimeTD",
-  "sdmc:/switch/bloons_adventure_time_td",
-  "sdmc:/battd",
-  "sdmc:/battd_nx",
+  "sdmc:/switch/sdt",
+  "sdmc:/switch/sdt_nx",
+  "sdmc:/sdt",
   "sdmc:/switch",
   ".",
 };

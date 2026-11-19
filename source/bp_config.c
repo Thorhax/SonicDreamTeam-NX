@@ -26,7 +26,7 @@ int   bp_mt_sample    = 0;   /* [mt] sampler: off unless config.txt asks */
 int   bp_ram_delay_ms = 0;   /* timing experiment, see config.h */
 int   bp_ram_skip_tail = 0;  /* see config.h */
 int   bp_diag_io = 0;        /* see config.h */
-int   bp_mmap_arena_mb = 1408;  /* peak varies 1161-1212 per boot; see config.h */
+int   bp_mmap_arena_mb = 232;   /* SDT: Unity's reservations go to the OC arena; this holds file maps only */  /* peak varies 1161-1212 per boot; see config.h */
 int   bp_gpu_arena_mb  = 430;   /* peak 340 over a 30k-frame session; see config.h */
 int   bp_ram_max_file_mb = 16;
 extern int bp_cache_lock_mode;   /* libc_shim.c: 0 never, 1 offline-only, 2 always */

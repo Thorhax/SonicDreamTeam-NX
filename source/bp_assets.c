@@ -355,6 +355,15 @@ static const char *asset_tail(const char *p) {
   return NULL;
 }
 
+/* SDT: there is no loose asset tree and no index of one. "<root>/assets" is the
+ * prefix asset_pack.c recognises, and it serves the path out of the APK. */
+static const char *sdt_assets_dir(void) {
+  static char d[768];
+  if (g_assets_dir[0]) return g_assets_dir;
+  if (!d[0]) snprintf(d, sizeof d, "%s/assets", bp_game_root());
+  return d;
+}
+
 const char *bp_assets_resolve(const char *path, char *out, size_t outsz) {
   if (!path || !out || outsz == 0) return path;
 
@@ -373,7 +382,7 @@ const char *bp_assets_resolve(const char *path, char *out, size_t outsz) {
   }
 
   if (tail[0] == 0) {
-    snprintf(out, outsz, "%s", g_assets_dir[0] ? g_assets_dir : bp_game_root());
+    snprintf(out, outsz, "%s", sdt_assets_dir());
     return out;
   }
 
@@ -388,19 +397,19 @@ const char *bp_assets_resolve(const char *path, char *out, size_t outsz) {
   char cleaned[BPA_PATH];
   clean_sep(tail, cleaned, sizeof cleaned);
   if (cleaned[0] == 0) {
-    snprintf(out, outsz, "%s", g_assets_dir[0] ? g_assets_dir : bp_game_root());
+    snprintf(out, outsz, "%s", sdt_assets_dir());
     return out;
   }
 
   const BmaEntry *e = lookup(cleaned);
   const char *rel = e ? (g_arena + e->real_off) : cleaned;
 
-  snprintf(out, outsz, "%s/%s", g_assets_dir[0] ? g_assets_dir : bp_game_root(), rel);
+  snprintf(out, outsz, "%s/%s", sdt_assets_dir(), rel);
 
 #if DEBUG_LOG
   /* Log only misses, and only the first few. A hit is the normal case and
    * logging it once per asset would bury the boot log; a miss is a lead. */
-  if (!e) {
+  if (!e && g_assets_dir[0]) {     /* SDT: without an index every path "misses"; that is the normal case */
     static int miss_logged;
     if (miss_logged < 32) {
       miss_logged++;

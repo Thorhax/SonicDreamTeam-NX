@@ -1,15 +1,19 @@
 #---------------------------------------------------------------------------------
-# BLOONS ADVENTURE TIME TD -- Nintendo Switch homebrew loader (wrapper port)
-# Unity 2020.3.40f1 / IL2CPP / arm64-v8a. Retargeted from the cloverpit_nx /
-# killerbean_nx so-loader lineage (MIT), itself descended from the
-# TheOfficialFloW / Rinnegatamante Vita/Switch loader tradition.
+# SONIC DREAM TEAM -- Nintendo Switch homebrew loader (wrapper port)
+# Unity 2022.3.54f1, arm64. Forked from battd_nx (MIT), itself from the
+# cloverpit_nx / killerbean_nx so-loader lineage and the TheOfficialFloW /
+# Rinnegatamante Vita/Switch loader tradition.
 #
-# Ships NO game code and NO game assets. You supply libmain/libunity/libil2cpp
-# and the assets tree from a copy of Bloons Adventure Time TD you legally own.
-# See README.md and tools/stage_sd.py.
+# The game is the "com.sdt.port" Android build: a stock Android libunity.so,
+# and a libil2cpp.so that is a small layer loading the iOS game image
+# (libUnityFramework.so, a Mach-O). It renders with Vulkan only, so this port
+# links the Mesa NVK driver instead of switch-mesa's GLES.
 #
-# Requires devkitA64 + devkitPro packages:
-#   dkp-pacman -S switch-mesa switch-libdrm_nouveau switch-sdl2 switch-zlib switch-libpng switch-ffmpeg
+# Ships NO game code and NO game assets.
+#
+# Requires devkitA64, libnx, switch-sdl2 switch-zlib switch-libpng switch-libexpat
+# switch-libzstd, and the Mesa Horizon SDK (NVK):
+#   make NVK_SDK=/path/to/sdk/opt/devkitpro/portlibs/switch
 #---------------------------------------------------------------------------------
 .SUFFIXES:
 ifeq ($(strip $(DEVKITPRO)),)
@@ -39,10 +43,13 @@ endif
 TOPDIR ?= $(CURDIR)
 include $(DEVKITPRO)/libnx/switch_rules
 
-TARGET      := battd_nx
-APP_TITLE   := Bloons Adventure Time TD
-APP_AUTHOR  := ChanseyIsTheBest
-APP_VERSION := 1.0.3
+TARGET      := sdt_nx
+APP_TITLE   := Sonic Dream Team
+APP_AUTHOR  := Thorhax
+APP_VERSION := 0.1.0
+# The Mesa Horizon SDK: NVK (Vulkan) and, over it, EGL/GLES.
+NVK_SDK     ?= $(TOPDIR)/../work/mesa/opt/devkitpro/portlibs/switch
+export NVK_SDK
 # Icon is OPTIONAL.
 #
 # $(wildcard) yields an empty string when the file is not there, and NROFLAGS
@@ -64,7 +71,7 @@ ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
 CFLAGS  := -g -Wall -O2 -ffunction-sections $(ARCH) $(DEFINES) \
            -DCRASH_LOG_PRINTF=crashPrintf \
-           $(INCLUDE) -D__SWITCH__
+           $(INCLUDE) -D__SWITCH__ -DVK_USE_PLATFORM_VI_NN
 
 # Promote the mistakes that are silent-but-fatal on AArch64 to hard errors.
 #
@@ -96,7 +103,8 @@ ASFLAGS  := -g $(ARCH)
 # failure. Inherited from pvz_fusion_nx via cloverpit_nx.
 LDFLAGS   = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) \
             -Wl,--wrap,malloc -Wl,--wrap,calloc -Wl,--wrap,realloc \
-            -Wl,--wrap,memalign -Wl,--wrap,free
+            -Wl,--wrap,memalign -Wl,--wrap,free \
+            -Wl,--allow-multiple-definition -Wl,--no-relax
 
 #---------------------------------------------------------------------------------
 # Dependency check.
@@ -108,8 +116,8 @@ LDFLAGS   = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir 
 #---------------------------------------------------------------------------------
 REQUIRED_HEADERS := \
     $(PORTLIBS)/include/SDL2/SDL.h \
-    $(PORTLIBS)/include/GLES3/gl3.h \
-    $(PORTLIBS)/include/EGL/egl.h \
+    $(NVK_SDK)/include/vulkan/vulkan.h \
+    $(NVK_SDK)/include/EGL/egl.h \
     $(PORTLIBS)/include/png.h
 
 MISSING := $(foreach h,$(REQUIRED_HEADERS),$(if $(wildcard $(h)),,$(h)))
@@ -148,7 +156,8 @@ endif
 # becomes dead weight the linker discards.
 #---------------------------------------------------------------------------------
 PKGCONF := PKG_CONFIG_PATH=$(PORTLIBS)/lib/pkgconfig pkg-config
-BATTD_VIDEO_ON := $(shell grep -cE '^[[:space:]]*\#define[[:space:]]+BATTD_VIDEO[[:space:]]+1' "$(TOPDIR)/source/config.h" 2>/dev/null)
+# SDT: sdt_video.c plays the intro with ffmpeg whatever BATTD_VIDEO says
+BATTD_VIDEO_ON := 1
 ifneq ($(strip $(BATTD_VIDEO_ON)),0)
 ifeq ($(wildcard $(PORTLIBS)/include/libavcodec/avcodec.h),)
 $(warning ==============================================================)
@@ -170,7 +179,14 @@ FFMPEG_LIBS := -lavformat -lavcodec -lswresample -lswscale -lavutil -lbz2 -llzma
 endif
 endif
 
-LIBS := -lSDL2 -lGLESv2 -lEGL -lglapi -ldrm_nouveau \
+# One Mesa for everything: NVK, and EGL/GLES (Zink) over it for the code that
+# still draws with GLES. The SDK archive's index leaves out its Rust members, so
+# an indexed copy is linked, in a group.
+MESA_LIBS := nvk/libvulkan.a $(NVK_SDK)/lib/libEGL.a $(NVK_SDK)/lib/libGLESv2.a \
+             $(NVK_SDK)/lib/libglapi.a $(NVK_SDK)/lib/libmesa_util.a \
+             $(NVK_SDK)/lib/libmesa_util_c11.a $(NVK_SDK)/lib/libmesa_util_simd.a \
+             $(NVK_SDK)/lib/libblake3.a $(NVK_SDK)/lib/libxmlconfig.a
+LIBS := -lSDL2 -Wl,--start-group $(MESA_LIBS) -lexpat -lzstd -lz -lnx -lm -Wl,--end-group \
         -Wl,--start-group $(FFMPEG_LIBS) -Wl,--end-group \
         -lpng -lz -lnx -lm
 
@@ -210,7 +226,7 @@ $(error Duplicate object basename(s) in $(SOURCES): $(DUPBASE) -- two sources \
 endif
 export OFILES  := $(OFILES_BIN) $(OFILES_SRC)
 export HFILES_BIN := $(addsuffix .h,$(subst .,_,$(BINFILES)))
-export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
+export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) -I$(NVK_SDK)/include \
                   $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
                   -I$(PORTLIBS)/include/SDL2 -I$(CURDIR)/$(BUILD)
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
@@ -245,7 +261,9 @@ NROFLAGS += --icon=$(APP_ICON)
 endif
 all : $(OUTPUT).nro
 $(OUTPUT).nro : $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON)   # a new icon.jpg rebuilds the .nro
-$(OUTPUT).elf : $(OFILES)
+$(OUTPUT).elf : $(OFILES) nvk/libvulkan.a
+nvk/libvulkan.a : $(NVK_SDK)/lib/libvulkan.a
+	@mkdir -p nvk && cp $< $@ && $(AR:ar=ranlib) $@
 
 # generated headers must exist before any source compiles
 $(OFILES_SRC) : $(HFILES_BIN)

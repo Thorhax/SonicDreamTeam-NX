@@ -40,6 +40,7 @@
 #include "util.h"
 #include "error.h"
 #include "imports.h"   /* dynlib_find_export (dlsym shim lookup) */
+#include "sdt_port.h"
 #include "so_util.h"
 #include "libc_shim.h"
 #include "asset_pack.h"
@@ -382,6 +383,8 @@ long syscall_fake(long number, ...) {
       const int val = va_arg(va, int);
       const struct timespec *to = va_arg(va, const struct timespec *);
       va_end(va);
+      /* a wake on a suspended thread's entry resumes it (sdt_shim.c) */
+      if ((op & 0x7f) == FUTEX_WAKE && sdt_futex_wake_hook((void *)uaddr)) return 1;
       return futex_impl(uaddr, op, val, to);
     }
     case ARM64_SYS_SCHED_SETAFFINITY:
@@ -428,6 +431,13 @@ long syscall_fake(long number, ...) {
       return total;
     }
   }
+  { va_list va; va_start(va, number);
+    long a0 = va_arg(va, long), a1 = va_arg(va, long), a2 = va_arg(va, long),
+         a3 = va_arg(va, long), a4 = va_arg(va, long), a5 = va_arg(va, long);
+    va_end(va);
+    int handled = 0;
+    long r = sdt_syscall(number, a0, a1, a2, a3, a4, a5, &handled);
+    if (handled) return r; }
   debugPrintf("libc: syscall(%ld) -> ENOSYS\n", number);
   errno = ENOSYS;
   return -1;
@@ -3086,11 +3096,12 @@ static uint8_t *oc_pool;        // commit-pool base (heap, page-aligned)
 static size_t   oc_pool_pages;  // pool capacity in pages
 static size_t   oc_pool_bump;   // next free pool page (bump; no reclaim)
 static size_t   oc_live_pages;  // committed pages (diagnostic)
+int             oc_code_window; // 1: the window is code-memory address space (set before oc_arena_init)
 
 // Called once from main() after the newlib heap exists. window = a reserved
 // stack-region range; pool = a heap buffer. Returns 1 if OC is armed.
 int oc_arena_init(void *window, size_t window_bytes, void *pool, size_t pool_bytes) {
-  if (!window || !pool || !window_bytes || !pool_bytes) return 0;
+  if (!window || !window_bytes) return 0;        /* SDT: no pool; commits come from the heap */
   size_t wp = window_bytes / MMAP_PAGE;
   uint8_t *u = (uint8_t *)calloc(wp, 1);
   uint8_t *c = (uint8_t *)calloc(wp, 1);
@@ -3121,9 +3132,10 @@ static int oc_range_occupied(size_t i, size_t need) {
   int occ = 0;
   while (a < end) {
     MemoryInfo mi; u32 pi;
-    if (R_FAILED(svcQueryMemory(&mi, &pi, a))) { occ = 1; break; }
+    Result qrc = svcQueryMemory(&mi, &pi, a);
+    if (R_FAILED(qrc)) { debugPrintf("[oc] svcQueryMemory(0x%llx) failed: 0x%x\n", (unsigned long long)a, qrc); occ = 1; break; }
     uint64_t span_end = mi.addr + mi.size;
-    if (span_end <= a) { occ = 1; break; }
+    if (span_end <= a) { debugPrintf("[oc] query of 0x%llx gave block 0x%llx+0x%llx\n", (unsigned long long)a, (unsigned long long)mi.addr, (unsigned long long)mi.size); occ = 1; break; }
     if (mi.type != MemType_Unmapped) {
       occ = 1;
       uint64_t s = mi.addr > (uint64_t)(uintptr_t)oc_base ? mi.addr
@@ -3170,48 +3182,96 @@ static void *oc_alloc_locked(size_t len, size_t *got) {
   return NULL;
 }
 
-// Commit [addr,len): alias contiguous bump-pool runs into the reserved OC range
-// via svcMapMemory (which remaps the pool source away -- we only access via the
-// OC address). Already-committed pages are skipped. caller holds g_mmap_lock.
+// Commit [addr,len). Already-committed pages are skipped. caller holds g_mmap_lock.
+//
+// SDT: each run of new pages gets its own page-aligned heap chunk, mapped at the
+// window address as code memory and made writable (sdt_codemem.c has the
+// kernel's rules). Nothing is carved out up front, so the engine's commits and
+// everything else share the one heap, and a run handed back whole (PROT_NONE or
+// munmap) is unmapped and freed.
+typedef struct { uint32_t first, count; void *src; } OcRun;
+#define OC_RUNS_MAX 32768
+static OcRun  *oc_runs;
+static int     oc_runs_n;
+static size_t  oc_peak_pages, oc_decommit_pages, oc_partial_pages;
+extern void *__real_memalign(size_t, size_t);
+extern void  __real_free(void *);
+
 static void oc_commit_locked(void *addr, size_t len) {
   if ((uint8_t *)addr < oc_base) return;
   size_t first = ((uint8_t *)addr - oc_base) / MMAP_PAGE;
   size_t cnt   = (len + MMAP_PAGE - 1) / MMAP_PAGE;
   if (first >= oc_pages) return;
   if (first + cnt > oc_pages) cnt = oc_pages - first;
+  if (!oc_runs) oc_runs = calloc(OC_RUNS_MAX, sizeof *oc_runs);
   size_t i = 0;
   while (i < cnt) {
     if (oc_committed[first + i]) { i++; continue; }
     size_t run = 0;
     while (i + run < cnt && !oc_committed[first + i + run]) run++;
-    if (oc_pool_bump + run > oc_pool_pages) {
-      debugPrintf("[oc] commit-pool EXHAUSTED: need %zu pages, %zu left (live %zu MB)\n",
-                  run, oc_pool_pages - oc_pool_bump, (oc_live_pages * MMAP_PAGE) >> 20);
-      return;   // can't back; touching it would fault (shouldn't happen at pool size)
-    }
     void *dst = oc_base + (first + i) * MMAP_PAGE;
-    void *src = oc_pool + oc_pool_bump * MMAP_PAGE;
-    Result rc = svcMapMemory(dst, src, (u64)run * MMAP_PAGE);
+    void *src = (oc_runs && oc_runs_n < OC_RUNS_MAX) ? __real_memalign(MMAP_PAGE, run * MMAP_PAGE) : NULL;
+    if (!src) {
+      debugPrintf("[oc] OUT OF MEMORY committing %zu KB (live %zu MB in %d runs)\n",
+                  run * MMAP_PAGE >> 10, (oc_live_pages * MMAP_PAGE) >> 20, oc_runs_n);
+      return;   // can't back; touching it faults
+    }
+    memset(src, 0, run * MMAP_PAGE);   // freshly committed anon must read as zero
+    Result rc = svcMapProcessCodeMemory(envGetOwnProcessHandle(), (u64)(uintptr_t)dst, (u64)(uintptr_t)src, (u64)run * MMAP_PAGE);
+    if (R_SUCCEEDED(rc)) {
+      rc = svcSetProcessMemoryPermission(envGetOwnProcessHandle(), (u64)(uintptr_t)dst, (u64)run * MMAP_PAGE, Perm_Rw);
+      if (R_FAILED(rc)) svcUnmapProcessCodeMemory(envGetOwnProcessHandle(), (u64)(uintptr_t)dst, (u64)(uintptr_t)src, (u64)run * MMAP_PAGE);
+    }
     if (R_FAILED(rc)) {
-      debugPrintf("[oc] svcMapMemory FAIL dst=%p run=%zu rc=0x%x\n", dst, run, rc);
+      debugPrintf("[oc] commit FAIL dst=%p run=%zu rc=0x%x\n", dst, run, rc);
+      __real_free(src);
       return;
     }
-    memset(dst, 0, run * MMAP_PAGE);   // freshly committed anon must read as zero
+    oc_runs[oc_runs_n].first = (uint32_t)(first + i); oc_runs[oc_runs_n].count = (uint32_t)run; oc_runs[oc_runs_n].src = src;
+    oc_runs_n++;
     for (size_t k = 0; k < run; k++) oc_committed[first + i + k] = 1;
-    oc_pool_bump += run; oc_live_pages += run;
-    if (((oc_live_pages * MMAP_PAGE) >> 24) != (((oc_live_pages - run) * MMAP_PAGE) >> 24))
-      if (TRACE_MMAP) debugPrintf("[oc] committed %zu MB (pool %zu/%zu MB)\n",
-                  (oc_live_pages * MMAP_PAGE) >> 20,
-                  (oc_pool_bump * MMAP_PAGE) >> 20, (oc_pool_pages * MMAP_PAGE) >> 20);
+    oc_live_pages += run;
+    if (oc_live_pages > oc_peak_pages) oc_peak_pages = oc_live_pages;
     i += run;
   }
 }
 
-// munmap of an OC range: reclaim only UNCOMMITTED pages (the tail-overflow slack
-// Unity trims after each over-map). Committed pages stay reserved+mapped (a small
-// bounded leak) so a later reservation can't collide with a live alias.
+// Give back the committed runs that lie wholly inside [addr,len). A run only
+// partly covered stays (the engine may still use the rest of it); counted.
+static void oc_decommit_locked(void *addr, size_t len) {
+  if ((uint8_t *)addr < oc_base || !oc_runs) return;
+  const size_t first = ((uint8_t *)addr - oc_base) / MMAP_PAGE;
+  const size_t end   = first + (len + MMAP_PAGE - 1) / MMAP_PAGE;
+  for (int r = 0; r < oc_runs_n; ) {
+    OcRun *o = &oc_runs[r];
+    const size_t rs = o->first, re = rs + o->count;
+    if (re <= first || rs >= end) { r++; continue; }
+    if (rs < first || re > end) {
+      const size_t lo = rs > first ? rs : first, hi = re < end ? re : end;
+      oc_partial_pages += hi - lo;
+      r++; continue;
+    }
+    void *dst = oc_base + rs * MMAP_PAGE;
+    Result rc = svcUnmapProcessCodeMemory(envGetOwnProcessHandle(), (u64)(uintptr_t)dst, (u64)(uintptr_t)o->src, (u64)o->count * MMAP_PAGE);
+    if (R_FAILED(rc)) { debugPrintf("[oc] decommit FAIL dst=%p rc=0x%x\n", dst, rc); r++; continue; }
+    __real_free(o->src);
+    for (size_t k = rs; k < re; k++) oc_committed[k] = 0;
+    oc_live_pages -= o->count; oc_decommit_pages += o->count;
+    *o = oc_runs[--oc_runs_n];        // unordered remove; re-examine this slot
+  }
+}
+
+void bp_oc_stats(size_t *live_mb, size_t *peak_mb, size_t *given_back_mb, size_t *partial_mb, int *runs) {
+  *live_mb = (oc_live_pages * MMAP_PAGE) >> 20; *peak_mb = (oc_peak_pages * MMAP_PAGE) >> 20;
+  *given_back_mb = (oc_decommit_pages * MMAP_PAGE) >> 20; *partial_mb = (oc_partial_pages * MMAP_PAGE) >> 20;
+  *runs = oc_runs_n;
+}
+
+// munmap of an OC range: committed runs wholly inside go back to the heap, and
+// the address space of every page no longer committed is reusable.
 static void oc_free_locked(void *addr, size_t len) {
   if ((uint8_t *)addr < oc_base) return;
+  oc_decommit_locked(addr, len);
   size_t first = ((uint8_t *)addr - oc_base) / MMAP_PAGE;
   size_t cnt   = (len + MMAP_PAGE - 1) / MMAP_PAGE;
   if (first >= oc_pages) return;
@@ -3678,6 +3738,16 @@ static void *mmap_fixed_anon(void *addr, size_t len, int prot) {
 
 void *mmap_fake_unguarded(void *addr, size_t length, int prot, int flags, int fd, long offset) {
   if (length == 0) length = 1;
+  /* A file mapped at a fixed address cannot be honoured (nothing here maps
+   * files), and answering with memory somewhere else leaks it: the facade asks
+   * for this for the image's __TEXT, checks the address, and copies instead. */
+  if ((flags & BIONIC_MAP_FIXED) && !(flags & BIONIC_MAP_ANONYMOUS)) { errno = ENOMEM; return (void *)-1; }
+  /* While the facade loads the iOS image its anonymous maps must be able to
+   * become executable in place (sdt_codemem.c). */
+  if (sdt_cm_phase_on() && (flags & BIONIC_MAP_ANONYMOUS) && !(flags & BIONIC_MAP_FIXED)) {
+    void *cm = sdt_cm_alloc(length);
+    if (cm) return cm;
+  }
   if ((flags & BIONIC_MAP_FIXED) && addr && (flags & BIONIC_MAP_ANONYMOUS)) {
     static int told;
     void *r = mmap_fixed_anon(addr, length, prot);
@@ -3696,12 +3766,12 @@ void *mmap_fake_unguarded(void *addr, size_t length, int prot, int flags, int fd
     void *op = oc_alloc_locked(length, &ocres);
     mutexUnlock(&g_mmap_lock);
     if (op) {
-      if (TRACE_MMAP) debugPrintf("[mmap] %u MB (prot=0x0 anon=1) -> %p  [OC reserve %u MB]\n",
+      debugPrintf("[mmap] %u MB (prot=0x0 anon=1) -> %p  [OC reserve %u MB]\n",
                   (unsigned)(length >> 20), op, (unsigned)(ocres >> 20));
       return op;   // reserved-only; committed lazily via mprotect_fake
     }
-    if (TRACE_MMAP) debugPrintf("[mmap] OC window full for %u MB -> heap-backed arena\n",
-                (unsigned)(length >> 20));
+    debugPrintf("[mmap] OC window full for %u MB -> heap-backed arena (window %zu MB)\n",
+                (unsigned)(length >> 20), (size_t)oc_pages * MMAP_PAGE >> 20);
   }
 
   size_t reserved = 0;
@@ -3806,6 +3876,7 @@ void * mmap_fake(void *addr, size_t length, int prot, int flags, int fd, long of
 }
 
 int munmap_fake(void *addr, size_t length) {
+  if (sdt_cm_owns(addr)) return 0;                  /* the arena does not give memory back */
   g_munmap_n++;
   if (mmap_fallback_free(addr, length)) return 0;   // newlib fallback allocation
   if (oc_contains(addr)) {                   // stack-region OC reservation
@@ -3823,6 +3894,7 @@ int munmap_fake(void *addr, size_t length) {
 // the alias address, PROT_NONE decommits it (safe -- reuse re-mprotects to RW).
 // In heap-backed mode the arena is always RW so this is a no-op.
 int mprotect_fake(void *addr, size_t len, int prot) {
+  if (sdt_cm_owns(addr)) return sdt_cm_protect(addr, len, prot);
   /* Diagnostic (fires even heap-backed): measure Unity's commit pattern so we can
    * confirm it commits PROT_NONE reservations via mprotect(RW) and size the
    * overcommit commit-pool. Tracks cumulative RW-commit vs PROT_NONE-decommit
@@ -3841,11 +3913,10 @@ int mprotect_fake(void *addr, size_t len, int prot) {
   if (oc_contains(addr)) {
     // OC reservation being committed/decommitted. Unity only ever commits (RW);
     // decommits aren't observed, so PROT_NONE here is left mapped (cheap + safe).
-    if (prot != BIONIC_PROT_NONE) {
-      mutexLock(&g_mmap_lock);
-      oc_commit_locked(addr, len);
-      mutexUnlock(&g_mmap_lock);
-    }
+    mutexLock(&g_mmap_lock);
+    if (prot != BIONIC_PROT_NONE) oc_commit_locked(addr, len);
+    else                          oc_decommit_locked(addr, len);   /* SDT: give whole runs back */
+    mutexUnlock(&g_mmap_lock);
     return 0;
   }
   if (!g_overcommit) return 0;
@@ -3883,13 +3954,18 @@ int statfs_fake(const char *path, void *buf) { (void)path; memset(buf, 0, 0x78);
 static const char *synthetic_proc(const char *path) {
   if (!path) return NULL;
   if (!strcmp(path, "/proc/meminfo"))
-    return "MemTotal:        524288 kB\n"
-           "MemFree:         393216 kB\n"
-           "MemAvailable:    393216 kB\n"
-           "Buffers:              0 kB\n"
-           "Cached:               0 kB\n"
-           "SwapTotal:            0 kB\n"
-           "SwapFree:             0 kB\n";
+{
+      /* SDT: the facade rates the device from MemTotal (under about 3.4 GB is
+       * its lowest class: half render scale). <root>/env.txt SDT_MEMTOTAL_MB
+       * chooses what is reported (8192 = top class, 512 = lowest). */
+      static char mi[256];
+      const char *e = getenv("SDT_MEMTOTAL_MB");
+      long mb = e ? atol(e) : 4096;                 /* class 1: 60 fps target, mid detail */
+      if (mb < 256) mb = 4096;
+      snprintf(mi, sizeof mi, "MemTotal:        %ld kB\nMemFree:         %ld kB\nMemAvailable:    %ld kB\n",
+               mb * 1024, mb * 512, mb * 512);
+      return mi;
+    }
   if (!strcmp(path, "/proc/cpuinfo"))
     return "processor\t: 0\nprocessor\t: 1\nprocessor\t: 2\n"
            "Features\t: fp asimd aes pmull sha1 sha2 crc32\n"
@@ -4367,7 +4443,9 @@ void *dlopen_fake(const char *name, int flags) {
    * dlsym_fake ignores the handle and resolves against loaded modules + shims. */
   if (name) {
     static const char *const refuse[] = {
-      "libswappywrapper.so", "libvulkan.so", "libaaudio.so",
+      /* Sonic Dream Team renders with Vulkan only: "libvulkan.so" is the
+       * statically linked NVK driver (sdt_vulkan.c), so it is NOT refused. */
+      "libswappywrapper.so", "libaaudio.so",
     };
     for (size_t i = 0; i < sizeof(refuse) / sizeof(*refuse); i++) {
       if (strstr(name, refuse[i])) {
@@ -4386,6 +4464,8 @@ void *dlsym_fake(void *handle, const char *symbol) {
   if (!symbol) return NULL;
   /* Firebase SWIG stub resolver (firebase_stub.c) -- see step 2b below. */
   extern void *firebase_stub_lookup(const char *symbol);
+  /* 0) Vulkan: the NVK driver's entry points (sdt_vulkan.c) */
+  if (symbol[0] == 'v' && symbol[1] == 'k') { void *v = sdt_vk_dlsym(symbol); if (v) return v; }
   /* 1) a real export from a loaded module (il2cpp/unity/main) */
   void *p = so_resolve_external(symbol);
   if (p) return p;
