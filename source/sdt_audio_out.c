@@ -43,6 +43,7 @@ static void out_main(void *arg) {
     if (i == NBUF) { audrenWaitFrame(); continue; }      /* all four are waiting their turn */
     uint8_t *p = A.pool + (size_t)i * A.bytes;
     A.fill(NULL, p, A.bytes);
+    if (sdt_output_held()) memset(p, 0, A.bytes);        /* the intro's sound only */
     armDCacheFlush(p, A.bytes);
     memset(&A.wb[i], 0, sizeof A.wb[i]);
     A.wb[i].data_raw = p; A.wb[i].size = A.bytes; A.wb[i].end_sample_offset = A.frames;

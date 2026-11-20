@@ -48,6 +48,10 @@ void  sdt_threads_arm(uintptr_t facade_base, size_t facade_size);
 void  sdt_main_thread_is_this(void);              /* the frame-loop thread: "UnityMain" to prctl(PR_GET_NAME) */
 int   sdt_prctl(int option, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5);
 
+/* ---- sdt_output_hold.c --------------------------------------------------- */
+int   sdt_output_held(void);                      /* the intro has the screen, the sound and the pads */
+void  sdt_output_wait(void);                      /* returns when it has given them back */
+
 /* ---- sdt_apk.c ----------------------------------------------------------- */
 int   sdt_apk_extract_asset(const char *name, const char *dst);   /* assets/<name> of the APK -> dst, once */
 

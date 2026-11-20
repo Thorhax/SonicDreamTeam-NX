@@ -70,6 +70,7 @@ void sdt_input_frame(void) {
     g_state = 1;
     debugPrintf("[pad] one controller reported to the facade\n");
   }
+  if (sdt_output_held()) return;                            /* the intro reads the buttons */
   padUpdate(&g_pad);
   const u64 now = padGetButtons(&g_pad), diff = now ^ g_prev;
   for (size_t i = 0; diff && i < sizeof MAP / sizeof MAP[0]; i++)

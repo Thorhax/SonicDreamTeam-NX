@@ -14,6 +14,7 @@
 
 #include "util.h"
 #include "error.h"
+#include "sdt_port.h"
 
 static int status_active;
 
@@ -27,6 +28,7 @@ void startup_status_update(const char *message) {
 
 void startup_status_begin(const char *message) {
   if (!status_active) {
+    sdt_output_wait();   /* the window is the intro's until it ends */
     consoleInit(NULL);
     status_active = 1;
   }
@@ -44,6 +46,7 @@ void fatal_error(const char *fmt, ...) {
   padConfigureInput(1, HidNpadStyleSet_NpadStandard);
   padInitializeDefault(&pad);
 
+  sdt_output_wait();   /* the window is the intro's until it ends */
   consoleInit(NULL);
 
   va_list list;

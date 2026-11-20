@@ -38,6 +38,7 @@
 #include "config.h"
 #include "diag.h"
 #include "error.h"      /* fatal_error */
+#include "thorhax_intro.h"
 #include "imports.h"
 #include "jni_fake.h"
 #include "libc_shim.h"
@@ -495,6 +496,9 @@ int main(int argc, char *argv[]) {
     if (!ok) fatal_error("Could not read the asset list of %s:\n%s", apk, asset_pack_error());
     debugPrintf("[pack] %u assets served from %s\n", (unsigned)asset_pack_entry_count(), apk);
   }
+  /* The files are there: the Thorhax intro plays from here on its own threads
+   * while the game loads (thorhax_intro/, sdt_output_hold.c). */
+  thorhax_intro_start();
   bp_net_init();   /* sockets + nifm; see bp_net.c */
 
   /* Title override leaves the cwd at the .nro folder or at the SD root

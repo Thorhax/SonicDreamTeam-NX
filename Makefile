@@ -61,8 +61,9 @@ export NVK_SDK
 APP_ICON    := $(wildcard $(TOPDIR)/icon.jpg)
 export APP_TITLE APP_AUTHOR APP_VERSION APP_ICON
 BUILD    := build
-SOURCES  := source
-INCLUDES := source
+# thorhax_intro: the startup video (its own README)
+SOURCES  := source thorhax_intro
+INCLUDES := source thorhax_intro
 DATA     := data
 # data/cacerts.pem is linked in with bin2o -> build/cacerts_pem.h (bp_net.c)
 DATA     := data
@@ -93,7 +94,7 @@ CFLAGS  += -Werror=implicit-function-declaration \
 # number, and a mismatch shows up as an unmapped-page abort during relocation
 # rather than as anything that names the address.
 CFLAGS  += -DLOAD_ADDRESS=0xC0000000
-CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
+CXXFLAGS := $(filter-out -Werror=implicit% -Werror=int-conversion -Werror=incompatible-pointer-types,$(CFLAGS)) -fno-rtti -fno-exceptions -std=gnu++17 -DTHORHAX_INTRO_DIR=\"$(TOPDIR)/thorhax_intro\"
 ASFLAGS  := -g $(ARCH)
 
 # Route nouveau's page-aligned GPU buffers into a dedicated contiguous arena
@@ -265,6 +266,9 @@ $(OUTPUT).nro : $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON)   # a new icon.jpg rebu
 $(OUTPUT).elf : $(OFILES) nvk/libvulkan.a
 nvk/libvulkan.a : $(NVK_SDK)/lib/libvulkan.a
 	@mkdir -p nvk && cp $< $@ && $(AR:ar=ranlib) $@
+
+# the intro's video and sound are linked in with .incbin
+thorhax_intro.o : $(TOPDIR)/thorhax_intro/thorhax_intro.mpg $(TOPDIR)/thorhax_intro/thorhax_intro.pcm
 
 # generated headers must exist before any source compiles
 $(OFILES_SRC) : $(HFILES_BIN)

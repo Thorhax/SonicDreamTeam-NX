@@ -57,6 +57,9 @@ The title override gives a homebrew three cores; with the fourth the port starts
 worker by itself. In the heaviest level measured that is the difference between about 57 fps and
 a steady 60 (see Known limits).
 
+The Thorhax intro plays at startup while the game loads (`thorhax_intro/`): any button skips it
+after 3 seconds, and - and + together skip it at once.
+
 The first boot builds `apk.idx` (a list of the APK's files) and takes a little longer. Saves go
 to `sdmc:/switch/sdt/com.sdt.port/files/`.
 
@@ -136,5 +139,5 @@ Not affiliated with or endorsed by SEGA, Hardlight, Apple, Nintendo or Unity. So
 
 ## License
 
-The source is MIT (`LICENSE`). The built `.nro` statically links the Mesa NVK driver and FFmpeg,
+The source is MIT (`LICENSE`). The intro's MPEG-1 decoder is [pl_mpeg](https://github.com/phoboslab/pl_mpeg) (MIT). The built `.nro` statically links the Mesa NVK driver and FFmpeg,
 whose own licences (including GPL terms) apply to the binary.

@@ -107,6 +107,11 @@ static VkResult VKAPI_CALL b_CreateInstance(const VkInstanceCreateInfo *ci, cons
 static VkResult VKAPI_CALL b_CreateAndroidSurfaceKHR(VkInstance inst, const void *info,
                                                      const VkAllocationCallbacks *alloc, VkSurfaceKHR *out) {
   (void)info;
+  if (sdt_output_held()) {
+    const u64 t0 = armGetSystemTick();
+    sdt_output_wait();
+    debugPrintf("[vk] the surface waited %u ms for the intro\n", (unsigned)(armTicksToNs(armGetSystemTick() - t0) / 1000000));
+  }
   VkViSurfaceCreateInfoNN sci = { VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN, NULL, 0, nwindowGetDefault() };
   PFN_vkCreateViSurfaceNN create = (PFN_vkCreateViSurfaceNN)vkGetInstanceProcAddr(inst, "vkCreateViSurfaceNN");
   VkResult r = create ? create(inst, &sci, alloc, out) : VK_ERROR_EXTENSION_NOT_PRESENT;
