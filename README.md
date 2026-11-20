@@ -31,7 +31,18 @@ loader, the fake JNI layer and the libc shims.
 
 ## Install
 
-You need a Switch with Atmosphère and the game's APK (`sdt-1.10.3.apk`).
+You need a Switch with Atmosphère and the game's APK.
+
+**Which APK:** the Android build of Sonic Dream Team, package `com.sdt.port`, **version 1.10.3**
+(usually named `sdt-1.10.3.apk`). This is the only version the port was built and tested against;
+other versions are not expected to work.
+
+| | |
+|---|---|
+| Size | 2,245,078,225 bytes (about 2.1 GB) |
+| SHA-256 | `d4e6fb090277a4ca92f9645f3f5c80e215fe63c56382efa1b937332b7c6356f6` |
+
+The APK is not part of this project and is not distributed with it.
 
 1. Make the folder `sdmc:/switch/sdt/` and copy `sdt_nx.nro` into it.
 2. Copy the APK there as `base.apk`, unmodified.
@@ -84,7 +95,7 @@ Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
   from the title override (three cores). The main thread is the limit, so stock clocks will be
   slower; try `SDT_MEMTOTAL_MB=512` there.
 - The game starts with no network (tested in airplane mode).
-- Not yet tested: docked mode, and sleep and resume.
+- Docked mode, sleep and resume, and HOME and return work (the game pauses itself).
 - Game Center features (leaderboards, cloud saves) do not exist here.
 
 ## Build
