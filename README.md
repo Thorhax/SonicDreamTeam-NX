@@ -83,7 +83,8 @@ Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
   level found (Ego City Nightmare) holds 60 fps from a four-core forwarder and runs at about 57 fps
   from the title override (three cores). The main thread is the limit, so stock clocks will be
   slower; try `SDT_MEMTOTAL_MB=512` there.
-- Not yet tested: playing with no network, docked mode, and sleep and resume.
+- The game starts with no network (tested in airplane mode).
+- Not yet tested: docked mode, and sleep and resume.
 - Game Center features (leaderboards, cloud saves) do not exist here.
 
 ## Build
