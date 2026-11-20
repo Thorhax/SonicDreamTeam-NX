@@ -592,17 +592,27 @@ static void *scanner_text(void){
   if (f) { n = fread(buf, 1, sizeof buf - 600, f); fclose(f); }
   buf[n] = 0;
   /* Default: graphics jobs. The engine then prepares its draw calls on the job
-   * workers instead of the frame-loop thread, which is the busiest thread and
-   * pinned to one core (measured in a heavy level: 44 -> 53 fps). And three
-   * job workers where the engine would start two (cores minus one): the frame
-   * loop spends part of each frame waiting for the workers (physics, the
-   * graphics jobs), and a third worker uses its core meanwhile; it never takes
-   * the core from the frame loop, whose priority is higher (50 -> 52 fps in
-   * the same level). "none" = only what the file says. */
+   * workers instead of the frame-loop thread, which is the busiest thread
+   * (measured in a heavy level: 44 -> 53 fps). Only gfx-enable-gfx-jobs: with
+   * gfx-enable-native-gfx-jobs as well, as 0.1.3 and 0.1.4 had it, the same
+   * level is slower (three cores 55 against 57.5 fps, four cores 59 against a
+   * steady 60), and with the native setting alone much slower (44).
+   * And one job worker a core where the engine would start one fewer: the
+   * frame loop spends part of each frame waiting for the workers (physics, the
+   * graphics jobs), and the extra worker uses its core meanwhile; it never
+   * takes the core from the frame loop, whose priority is higher. That is
+   * three, or four when the process may use the fourth core, which a forwarder
+   * can allow and hbmenu's title takeover does not.
+   * "none" = only what the file says. */
   const char *extra = NULL;
   if (strstr(g_last_asset, "boot.config")) {
     extra = getenv("SDT_BOOT_CONFIG");
-    if (!extra) extra = "gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1;job-worker-count=3";
+    if (!extra) {
+      u64 cores = 0;
+      svcGetInfo(&cores, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
+      extra = (cores & 8) ? "gfx-enable-gfx-jobs=1;job-worker-count=4" : "gfx-enable-gfx-jobs=1;job-worker-count=3";
+      debugPrintf("[boot] cores allowed %#llx: %s\n", (unsigned long long)cores, extra);
+    }
     if (!strcmp(extra, "none") || !strcmp(extra, "0")) extra = NULL;
   }
   if (extra && strlen(extra) < 500) {

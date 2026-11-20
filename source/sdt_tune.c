@@ -33,8 +33,154 @@ static void *class_named(const char *ns, const char *name) {
   return NULL;
 }
 
+/* ---- experiment switches (env.txt), frame-loop thread ---------------------
+ * SDT_FIXED_STEP=<seconds>   Time.fixedDeltaTime: the physics and FixedUpdate step (the game's is 1/60)
+ * SDT_MAX_DELTA=<seconds>    Time.maximumDeltaTime: the longest frame the game clock follows; at the
+ *                            fixed step it means one physics step a frame at most, and slow motion below it
+ * SDT_LOD_BIAS=<factor>      QualitySettings.lodBias (below 1: lower-detail models nearer the camera)
+ * SDT_URP=<name>=<value>;... properties of the render pipeline asset, e.g.
+ *                            maxAdditionalLightsCount=0;supportsMainLightShadows=0;msaaSampleCount=1
+ * Each is put back when the game changes it. */
+static void tune_static_float(const char *cls, const char *prop, float want, unsigned frame) {
+  API(void *, il2cpp_class_get_method_from_name, void *, const char *, int);
+  API(void *, il2cpp_runtime_invoke, void *, void *, void **, void **);
+  static int told;
+  char g[64], st[64]; snprintf(g, sizeof g, "get_%s", prop); snprintf(st, sizeof st, "set_%s", prop);
+  void *k = class_named("UnityEngine", cls);
+  void *get = k ? il2cpp_class_get_method_from_name(k, g, 0) : NULL;
+  void *set = k ? il2cpp_class_get_method_from_name(k, st, 1) : NULL;
+  if (!set) { if (told++ < 4) debugPrintf("[tune] %s.%s has no setter in this game\n", cls, prop); return; }
+  void *exc = NULL; float cur = -1;
+  if (get) { uint8_t *b = il2cpp_runtime_invoke(get, NULL, NULL, &exc); if (b && !exc) cur = *(float *)(b + 0x10); }
+  if (get && cur > want * 0.999f && cur < want * 1.001f) return;
+  if (!get && frame > 600) return;                     /* nothing to compare with: set it for the first seconds only */
+  void *a[1] = { &want }; exc = NULL;
+  il2cpp_runtime_invoke(set, NULL, a, &exc);
+  if (told++ < 12) debugPrintf("[tune] %s.%s %.5f -> %.5f (frame %u)%s\n", cls, prop, cur, want, frame, exc ? "  (the call threw)" : "");
+}
+
+static void tune_urp(const char *spec, unsigned frame) {
+  API(void *, il2cpp_class_get_method_from_name, void *, const char *, int);
+  API(void *, il2cpp_runtime_invoke, void *, void *, void **, void **);
+  API(void *, il2cpp_object_get_class, void *);
+  API(void *, il2cpp_method_get_param, void *, uint32_t);
+  API(int, il2cpp_type_get_type, void *);
+  static int told;
+  void *gs = class_named("UnityEngine.Rendering", "GraphicsSettings");
+  void *get_rp = gs ? il2cpp_class_get_method_from_name(gs, "get_currentRenderPipeline", 0) : NULL;
+  void *exc = NULL;
+  void *asset = get_rp ? il2cpp_runtime_invoke(get_rp, NULL, NULL, &exc) : NULL;
+  if (!asset || exc || !il2cpp_method_get_param || !il2cpp_type_get_type) return;
+  void *k = il2cpp_object_get_class(asset);
+  for (const char *p = spec; *p; ) {
+    const size_t len = strcspn(p, ";");
+    const char *eq = memchr(p, '=', len);
+    if (eq && eq - p < 48) {
+      char g[64], st[64];
+      snprintf(g, sizeof g, "get_%.*s", (int)(eq - p), p); snprintf(st, sizeof st, "set_%.*s", (int)(eq - p), p);
+      void *get = il2cpp_class_get_method_from_name(k, g, 0), *set = il2cpp_class_get_method_from_name(k, st, 1);
+      if (!set) { if (told++ < 8) debugPrintf("[tune] pipeline asset: no %s\n", st); }
+      else {
+        const int ty = il2cpp_type_get_type(il2cpp_method_get_param(set, 0));   /* 2 bool, 0xc float, else a 32-bit integer or enum */
+        union { float f; int32_t i; uint8_t b; } v = { .i = 0 }, cur = { .i = 0x7fffffff };
+        if (ty == 0xc) v.f = (float)atof(eq + 1); else if (ty == 2) v.b = atoi(eq + 1) != 0; else v.i = atoi(eq + 1);
+        exc = NULL;
+        uint8_t *b = get ? il2cpp_runtime_invoke(get, asset, NULL, &exc) : NULL;
+        if (b && !exc) { cur.i = 0; memcpy(&cur, b + 0x10, ty == 2 ? 1 : 4); }
+        if (cur.i != v.i && (get || frame < 600)) {
+          void *a[1] = { &v }; exc = NULL;
+          il2cpp_runtime_invoke(set, asset, a, &exc);
+          if (told++ < 24) debugPrintf("[tune] pipeline asset %s (type %#x): %d -> %d (frame %u)%s\n", st, ty, cur.i, v.i, frame, exc ? "  (the call threw)" : "");
+        }
+      }
+    }
+    p += len; if (*p == ';') p++;
+  }
+}
+
+static void tune_experiments(unsigned frame) {
+  static int init; static float fixed_step, max_delta, lod_bias; static const char *urp;
+  if (!init) {
+    const char *e;
+    init = 1;
+    if ((e = getenv("SDT_FIXED_STEP")) != NULL) fixed_step = (float)atof(e);
+    if ((e = getenv("SDT_MAX_DELTA")) != NULL) max_delta = (float)atof(e);
+    if ((e = getenv("SDT_LOD_BIAS")) != NULL) lod_bias = (float)atof(e);
+    urp = getenv("SDT_URP");
+  }
+  { /* SDT_TARGET_FPS=<n>: Application.targetFrameRate (the game asks for 60). With SDT_VSYNC=0 a higher
+     * value shows how fast a scene could run; it is a measuring aid, not a play setting. */
+    static int target = -1, told;
+    if (target < 0) { const char *e = getenv("SDT_TARGET_FPS"); target = e ? atoi(e) : 0; }
+    if (target >= 20 && target <= 240) {
+      API(void *, il2cpp_class_get_method_from_name, void *, const char *, int);
+      API(void *, il2cpp_runtime_invoke, void *, void *, void **, void **);
+      void *k = class_named("UnityEngine", "Application");
+      void *get = k ? il2cpp_class_get_method_from_name(k, "get_targetFrameRate", 0) : NULL;
+      void *set = k ? il2cpp_class_get_method_from_name(k, "set_targetFrameRate", 1) : NULL;
+      void *exc = NULL;
+      uint8_t *b = get && set ? il2cpp_runtime_invoke(get, NULL, NULL, &exc) : NULL;
+      if (b && !exc && *(int *)(b + 0x10) != target) {
+        void *a[1] = { &target };
+        il2cpp_runtime_invoke(set, NULL, a, &exc);
+        if (told++ < 8) debugPrintf("[tune] targetFrameRate %d -> %d (frame %u)\n", *(int *)(b + 0x10), target, frame);
+      }
+    } }
+  if (fixed_step > 0.004f && fixed_step < 0.1f) tune_static_float("Time", "fixedDeltaTime", fixed_step, frame);
+  if (max_delta > 0.004f && max_delta < 1.0f) tune_static_float("Time", "maximumDeltaTime", max_delta, frame);
+  if (lod_bias > 0.01f) {
+    /* the managed setter is stripped from this game: call the engine's own */
+    API(void *, il2cpp_resolve_icall, const char *);
+    static void (*set)(float); static float (*get)(void); static int told;
+    if (!set && il2cpp_resolve_icall && !told) {
+      set = (void (*)(float))il2cpp_resolve_icall("UnityEngine.QualitySettings::set_lodBias");
+      get = (float (*)(void))il2cpp_resolve_icall("UnityEngine.QualitySettings::get_lodBias");
+      debugPrintf("[tune] lodBias: engine setter %p getter %p\n", (void *)set, (void *)get);
+      told = 1;
+    }
+    if (set && get) {
+      const float cur = get();
+      if (cur < lod_bias * 0.999f || cur > lod_bias * 1.001f) {
+        set(lod_bias);
+        if (told++ < 8) debugPrintf("[tune] lodBias %.2f -> %.2f (frame %u)\n", cur, lod_bias, frame);
+      }
+    }
+  }
+  if (urp && *urp) tune_urp(urp, frame);
+}
+
+/* SDT_FPS=1: every 300 frames one line into <root>/fps.txt -- the rate, the
+ * longest frame, and how many frames took more than one refresh (18.5 ms) and
+ * more than two (34 ms). Works in the release build, which writes no log. */
+#include <switch.h>
+const char *bp_game_root(void);
+void sdt_fps_frame(void) {
+  static int on = -1; static u64 t_prev, t_win; static unsigned n, late, late2; static double worst;
+  if (on < 0) { const char *e = getenv("SDT_FPS"); on = e && atoi(e) > 0; }
+  if (!on) return;
+  const u64 t = armGetSystemTick();
+  if (t_prev) {
+    const double ms = (double)armTicksToNs(t - t_prev) / 1e6;
+    if (ms > worst) worst = ms;
+    if (ms > 18.5) late++;
+    if (ms > 34.0) late2++;
+    if (++n >= 300) {
+      char path[600]; snprintf(path, sizeof path, "%s/fps.txt", bp_game_root());
+      FILE *f = fopen(path, "a");
+      if (f) {
+        fprintf(f, "%.1f fps over %u frames; longest %.0f ms; %u over 18.5 ms, %u over 34 ms\n",
+                n / ((double)armTicksToNs(t - t_win) / 1e9), n, worst, late, late2);
+        fclose(f);
+      }
+      n = late = late2 = 0; worst = 0; t_win = t;
+    }
+  } else t_win = t;
+  t_prev = t;
+}
+
 /* frame-loop thread */
 void sdt_tune_frame(unsigned frame) {
+  if (frame % 30 == 7 && frame > 60) tune_experiments(frame);
   static float want = -1;
   static int told;
   if (want < 0) {

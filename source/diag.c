@@ -8,6 +8,7 @@
 #include <switch.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 
@@ -43,6 +44,7 @@ typedef struct {
   char                  name[32];
   const void           *entry;
   int                   is_main_engine;
+  int                   wait_class;        /* 1 the frame loop (UnityMain), 2 a job worker, 0 any other */
   /* live wait beacon */
   volatile int          wait_kind;
   volatile const void  *wait_obj;
@@ -131,6 +133,32 @@ void diag_thread_unregister(void) {
   self = NULL;
 }
 
+/* SDT_THREADS=<name>:<cores>:<priority>;...  -- where a thread of the engine
+ * runs. <name> is the start of the thread's name ("Job.Worker" covers all the
+ * job workers, "Job.Worker 1" one of them), <cores> a hex mask of cores (1, 2,
+ * 4, 8; the lowest becomes the preferred one), <priority> hex, 2c (highest
+ * used here) .. 3b (the default: time-sliced with every other thread). 0 keeps
+ * the current value. Applied when the thread takes its name. */
+static void thread_tune(DiagThread *t) {
+  static const char *spec; static int told;
+  if (!spec) { spec = getenv("SDT_THREADS"); if (!spec) spec = ""; }
+  for (const char *p = spec; *p; ) {
+    const size_t len = strcspn(p, ";");
+    const char *c1 = memchr(p, ':', len);
+    if (c1 && c1 > p && !strncmp(t->name, p, (size_t)(c1 - p))) {
+      char *end;
+      const unsigned long mask = strtoul(c1 + 1, &end, 16);
+      const unsigned long prio = *end == ':' ? strtoul(end + 1, NULL, 16) : 0;
+      Result r1 = 0, r2 = 0;
+      if (mask) r1 = svcSetThreadCoreMask(t->handle, __builtin_ctzl(mask), (u32)mask);
+      if (prio) r2 = svcSetThreadPriority(t->handle, (u32)prio);
+      if (told++ < 40) debugPrintf("[threads] %s: cores %#lx (rc %x), priority %#lx (rc %x)\n", t->name, mask, r1, prio, r2);
+      return;
+    }
+    p += len; if (*p == ';') p++;
+  }
+}
+
 void diag_set_name(void *target_pthread, const char *name) {
   if (!name) return;
   DiagThread *t = NULL;
@@ -146,7 +174,11 @@ void diag_set_name(void *target_pthread, const char *name) {
   if (!t) return;
   strncpy(t->name, name, sizeof(t->name) - 1);
   t->name[sizeof(t->name) - 1] = 0;
+  t->wait_class = !strcmp(t->name, "UnityMain") ? 1 : !strncmp(t->name, "Job.Worker", 10) ? 2 : 0;
+  thread_tune(t);
 }
+/* for the futex counters (libc_shim.c) */
+int diag_self_class(void) { return self ? self->wait_class : 0; }
 
 void diag_wait_enter(int kind, const void *obj) {
   DiagThread *t = diag_self();

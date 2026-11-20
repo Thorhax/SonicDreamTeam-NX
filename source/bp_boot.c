@@ -163,6 +163,7 @@ int bp_boot_and_run(void) {
     if (frames == 900) { extern void diag_log_cores(void); diag_log_cores(); }
     editbox_pump();                     /* a queued soft-input request: swkbd + result, between frames */
     { extern void sdt_tune_frame(unsigned); sdt_tune_frame((unsigned)frames); }   /* render scale override */
+    { extern void sdt_fps_frame(void); sdt_fps_frame(); }                         /* SDT_FPS: fps.txt, in a release build too */
     { extern void sdt_tune_probe(unsigned); sdt_tune_probe((unsigned)frames); }   /* SDT_PROFILE: timing settings */
     { extern void sdt_tune_dump_methods(unsigned); sdt_tune_dump_methods((unsigned)frames); }
     { extern void sdt_video_frame(void); sdt_video_frame(); }   /* videos that could not open: finish them */
@@ -406,6 +407,12 @@ int bp_boot_and_run(void) {
           sdt_threads_stats(&ts_, &tr_, &tu_);
           debugPrintf("[fps] %.1f fps over %u frames; worst %.0f ms; %u over 34 ms, %u over 50 ms; under 18.5 / 28 / longer: %u %u %u | thread stops %u, resumes %u, not pausable %u\n",
                       n / secs, n, worst, over33, over50, b17, b25, b33, ts_, tr_, tu_);
+          { extern void sdt_futex_stats(int, unsigned long long[4]); unsigned long long m[4], w[4];
+            sdt_futex_stats(1, m); sdt_futex_stats(2, w);
+            if (m[0] || w[0])
+              debugPrintf("[futex] a frame: frame loop %.1f sleeps, %.2f ms asleep (longest %.1f ms, %llu timeouts); workers %.1f sleeps, %.2f ms asleep (%llu timeouts)\n",
+                          (double)m[0] / n, (double)m[1] / 1000.0 / n, (double)m[2] / 1000.0, m[3],
+                          (double)w[0] / n, (double)w[1] / 1000.0 / n, w[3]); }
           n = 0; over33 = over50 = 0; b17 = b25 = b33 = 0; worst = 0; t_win = t;
         }
       } else t_win = t;

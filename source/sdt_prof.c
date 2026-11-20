@@ -1,8 +1,11 @@
-/* sdt_prof.c -- a sampling profiler for the two threads that decide the frame
- * rate: UnityMain (game logic, the frame loop) and UnityGfxDeviceWorker (the
- * engine's render thread, which makes the Vulkan calls).
+/* sdt_prof.c -- a sampling profiler for the threads that decide the frame
+ * rate: by default UnityMain (game logic, the frame loop) and
+ * UnityGfxDeviceWorker (the engine's render thread).
  *
- * <root>/env.txt SDT_PROFILE=<hz> (e.g. 400) starts it. Every tick each thread
+ * <root>/env.txt SDT_PROFILE=<hz> (e.g. 400) starts it; SDT_PROFILE_THREADS=
+ * <name>,<name>,... samples other threads instead (up to 8, e.g.
+ * "UnityMain,Job.Worker 0,Job.Worker 1,Job.Worker 2": with graphics jobs the
+ * workers make the Vulkan calls). Every tick each thread
  * is stopped for an instant and its pc, lr and the callers up its frame chain
  * (DEPTH addresses in all) are recorded;
  * samples are appended to <root>/prof.bin every few seconds, and <root>/prof.map
@@ -29,7 +32,10 @@ typedef struct { uint32_t thread, pad; uint64_t a[DEPTH]; } Sample;
 static Sample g_buf[CAP];
 static int    g_n, g_hz;
 static Thread g_thread;
-static unsigned g_miss[2];
+#define MAXT 8
+static char   g_names[MAXT][32] = { "UnityMain", "UnityGfxDeviceWorker" };
+static uint32_t g_nt = 2;
+static unsigned g_miss[MAXT];
 static char   g_path[600];
 
 void sdt_prof_anchor(void) {}                      /* its address gives the NRO's load slide */
@@ -50,17 +56,16 @@ static void flush(void) {
 
 static void prof_main(void *arg) {
   (void)arg;
-  static const char *const NAMES[2] = { "UnityMain", "UnityGfxDeviceWorker" };
   const u64 period = 1000000000ull / (u64)g_hz;
   u64 last_flush = armGetSystemTick();
   for (;;) {
     svcSleepThread((s64)period);
-    for (uint32_t t = 0; t < 2; t++) {
+    for (uint32_t t = 0; t < g_nt; t++) {
       if (g_n >= CAP) break;
       Sample *s = &g_buf[g_n];
-      if (diag_sample_named_n(NAMES[t], s->a, DEPTH)) { s->thread = t; s->pad = 0; g_n++; } else g_miss[t]++;
+      if (diag_sample_named_n(g_names[t], s->a, DEPTH)) { s->thread = t; s->pad = 0; g_n++; } else g_miss[t]++;
     }
-    if (g_n >= CAP - 4 || armTicksToNs(armGetSystemTick() - last_flush) > 4000000000ull) { flush(); last_flush = armGetSystemTick(); }
+    if (g_n >= CAP - MAXT || armTicksToNs(armGetSystemTick() - last_flush) > 4000000000ull) { flush(); last_flush = armGetSystemTick(); }
   }
 }
 
@@ -69,6 +74,15 @@ void sdt_prof_start(void) {
   const char *e = getenv("SDT_PROFILE");
   g_hz = e ? atoi(e) : 0;
   if (g_hz < 10 || g_hz > 2000) return;
+  const char *tl = getenv("SDT_PROFILE_THREADS");
+  if (tl && *tl) {
+    for (g_nt = 0; g_nt < MAXT && *tl; ) {
+      const size_t len = strcspn(tl, ",");
+      if (len && len < sizeof g_names[0]) { memcpy(g_names[g_nt], tl, len); g_names[g_nt][len] = 0; g_nt++; }
+      tl += len; if (*tl == ',') tl++;
+    }
+    if (!g_nt) return;
+  }
   char map[600];
   snprintf(g_path, sizeof g_path, "%s/prof.bin", bp_game_root());
   snprintf(map, sizeof map, "%s/prof.map", bp_game_root());
@@ -78,6 +92,7 @@ void sdt_prof_start(void) {
     uintptr_t lo = 0, hi = 0; sdt_cm_range(&lo, &hi);
     fprintf(f, "hz %d\n", g_hz);
     fprintf(f, "depth %d\n", DEPTH);
+    for (uint32_t t = 0; t < g_nt; t++) fprintf(f, "thread%u %s\n", t, g_names[t]);
     fprintf(f, "nro_anchor %llx\n", (unsigned long long)(uintptr_t)&sdt_prof_anchor);
     fprintf(f, "libmain %llx %llx\n", (unsigned long long)(uintptr_t)main_mod.load_virtbase, (unsigned long long)main_mod.load_size);
     fprintf(f, "libunity %llx %llx\n", (unsigned long long)(uintptr_t)unity_mod.load_virtbase, (unsigned long long)unity_mod.load_size);
@@ -95,7 +110,7 @@ void sdt_prof_start(void) {
   if (R_SUCCEEDED(rc)) rc = threadStart(&g_thread);
   f = fopen(map, "a");
   if (f) { fprintf(f, "sampler rc %x prio %x\n", rc, used); fclose(f); }
-  debugPrintf("[prof] sampling UnityMain and UnityGfxDeviceWorker at %d Hz -> %s (rc %x, prio %x)\n", g_hz, g_path, rc, used);
+  debugPrintf("[prof] sampling %u threads (%s, ...) at %d Hz -> %s (rc %x, prio %x)\n", g_nt, g_names[0], g_hz, g_path, rc, used);
 }
 
 /* SDT_AUDIO_TRACE: where the audio threads are, written when the queue stalls. */

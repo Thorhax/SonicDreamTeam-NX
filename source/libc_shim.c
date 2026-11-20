@@ -274,8 +274,69 @@ int gettid_fake(void) {
 static Mutex   futex_lock[FUTEX_BUCKETS];   // libnx Mutex/CondVar are u32; 0 == ready
 static CondVar futex_cond[FUTEX_BUCKETS];
 
+/* The default: the kernel's own wait-on-address (svcWaitForAddress /
+ * svcSignalToAddress), which is futex(2) under another name: one kernel call a
+ * wait and a wake, no bucket lock, and a wake releases exactly as many waiters
+ * as asked. The bucket version above wakes every waiter of the bucket for each
+ * wake, so each job handed to an idle worker wakes all of them. */
+static struct { volatile u64 sleeps, ticks, longest, timeouts; } g_fx[3];   /* [1] the frame loop, [2] the job workers (summed, unlocked) */
+/* since the last call: sleeps, time asleep (us), longest (us), sleeps that ran to the timeout */
+void sdt_futex_stats(int cls, unsigned long long out[4]) {
+  out[0] = g_fx[cls].sleeps; out[1] = armTicksToNs(g_fx[cls].ticks) / 1000; out[2] = armTicksToNs(g_fx[cls].longest) / 1000;
+  out[3] = g_fx[cls].timeouts;
+  g_fx[cls].sleeps = g_fx[cls].ticks = g_fx[cls].longest = g_fx[cls].timeouts = 0;
+}
+int diag_self_class(void);
+static long futex_kernel(volatile int32_t *uaddr, int cmd, int op, int val, const struct timespec *to) {
+  if (cmd == FUTEX_WAIT || cmd == FUTEX_WAIT_BITSET) {
+    s64 rel = 16000000;                      /* no deadline: re-poll, as the bucket version does */
+    if (to) {
+      if (cmd == FUTEX_WAIT_BITSET) {        /* absolute; see the long note below */
+        struct timespec now;
+        clock_gettime((op & 256) ? CLOCK_REALTIME : CLOCK_MONOTONIC, &now);
+        rel = ((s64)to->tv_sec - (s64)now.tv_sec) * 1000000000LL + ((s64)to->tv_nsec - (s64)now.tv_nsec);
+      } else rel = (s64)to->tv_sec * 1000000000LL + (s64)to->tv_nsec;
+      if (rel < 0) rel = 0;
+    }
+    const int cls = diag_self_class();
+    const u64 w0 = cls ? armGetSystemTick() : 0;
+    const Result rc = svcWaitForAddress((void *)(uintptr_t)uaddr, ArbitrationType_WaitIfEqual, val, rel);
+    if (cls) {                               /* the [fps] line reports these */
+      const u64 d = armGetSystemTick() - w0;
+      g_fx[cls].sleeps++; g_fx[cls].ticks += d;
+      if (d > g_fx[cls].longest) g_fx[cls].longest = d;
+      if (R_FAILED(rc) && R_DESCRIPTION(rc) == KernelError_TimedOut) g_fx[cls].timeouts++;
+    }
+    if (R_SUCCEEDED(rc)) return 0;
+    if (R_DESCRIPTION(rc) == KernelError_TimedOut) {
+      if (!to) return 0;                     /* the re-poll: the caller checks its word again */
+      errno = ETIMEDOUT; return -1;
+    }
+    errno = EAGAIN; return -1;               /* the word was not `val` */
+  }
+  if (cmd == FUTEX_WAKE || cmd == FUTEX_WAKE_BITSET) {
+    svcSignalToAddress((void *)(uintptr_t)uaddr, SignalType_Signal, 0, val > 0 ? val : 1);
+    return val > 0 ? val : 0;
+  }
+  errno = ENOSYS;
+  return -1;
+}
+
 static long futex_impl(volatile int32_t *uaddr, int op, int val, const struct timespec *to) {
   const int cmd = op & FUTEX_CMD_MASK;
+  static int kernel = -1;
+  if (kernel < 0) {
+    const char *e = getenv("SDT_FUTEX");
+    int k = !(e && !strcmp(e, "bucket"));    /* SDT_FUTEX=bucket: the mutex + condvar version below */
+    if (k) {                                 /* is the call allowed for this process? */
+      static int32_t probe;
+      const Result rc = svcSignalToAddress(&probe, SignalType_Signal, 0, 1);
+      debugPrintf("[futex] kernel wait-on-address: probe rc %x\n", rc);
+      if (R_FAILED(rc)) k = 0;
+    }
+    kernel = k;
+  }
+  if (kernel) return futex_kernel(uaddr, cmd, op, val, to);
   const unsigned h = (unsigned)(((uintptr_t)uaddr >> 4) & (FUTEX_BUCKETS - 1));
   if (cmd == FUTEX_WAIT || cmd == FUTEX_WAIT_BITSET) {
     long ret = 0;

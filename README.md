@@ -40,6 +40,12 @@ You need a Switch with Atmosphère and the game's APK (`sdt-1.10.3.apk`).
 4. Start it with **title override**: hold R while launching an installed game to open the
    homebrew menu, then run `sdt_nx`. It does not have enough memory in album (applet) mode.
 
+For the best frame rate, start it from a **forwarder that allows four CPU cores** instead (for
+example sphaira: select `sdt_nx`, Options, Install Forwarder, Address Space 39-bit, CPU Cores 4).
+The title override gives a homebrew three cores; with the fourth the port starts a fourth engine
+worker by itself. In the heaviest level measured that is the difference between about 57 fps and
+a steady 60 (see Known limits).
+
 The first boot builds `apk.idx` (a list of the APK's files) and takes a little longer. Saves go
 to `sdmc:/switch/sdt/com.sdt.port/files/`.
 
@@ -59,19 +65,25 @@ Optional `sdmc:/switch/sdt/env.txt`, one `NAME=value` a line:
 | `SDT_BUTTONS` | label | `position` maps buttons by position instead (the Switch's B becomes the game's A) |
 | `SDT_PSO_WARMUP` | on | `0` skips building the game's list of shader pipelines at boot |
 | `SDT_VSYNC` | on | `0` presents without waiting for the display (the game's own choice; can tear) |
-| `SDT_BOOT_CONFIG` | graphics jobs, 3 workers | Engine start-up settings added to the game's `boot.config`, as `key=value;key=value`. The default is `gfx-enable-gfx-jobs=1;gfx-enable-native-gfx-jobs=1;job-worker-count=3` (draw calls prepared on the worker threads, and three of them); `none` adds nothing |
+| `SDT_BOOT_CONFIG` | graphics jobs, a worker per core | Engine start-up settings added to the game's `boot.config`, as `key=value;key=value`. The default is `gfx-enable-gfx-jobs=1;job-worker-count=3` (draw calls prepared on the worker threads), with `4` workers when four cores are allowed; `none` adds nothing |
 | `SDT_SHADOW_DISTANCE` | the game's | How far real-time shadows are drawn, in metres (`0` = none) |
 | `SDT_AUDIO` | own | `sdl` uses SDL's audio device instead of the port's own output loop |
 | `SDT_AUDIO_TRACE` | off | `1` writes `audio.txt` once a second: queue counters, loudness, where the audio threads are if the queue stalls |
-| `SDT_PROFILE` | off | Samples per second (e.g. `400`) for the built-in profiler; see Build |
+| `SDT_FPS` | off | `1` writes `fps.txt`: every 300 frames the rate, the longest frame and how many frames took more than one refresh |
+| `SDT_FUTEX` | kernel | `bucket` goes back to the older wait/wake emulation for the engine's threads (0.1.4 and before) |
+| `SDT_FIXED_STEP` | the game's | Physics step in seconds (the game's is 1/60). `0.02` saves a little CPU below 60 fps; it can change how movement feels |
+| `SDT_LOD_BIAS` | the game's | Detail distance factor; below `1` switches to simpler models nearer the camera |
+| `SDT_URP` | the game's | Properties of the render pipeline asset, as `name=value;name=value`, e.g. `supportsMainLightShadows=0;maxAdditionalLightsCount=0` |
+| `SDT_THREADS` | off | Cores and priority of engine threads, as `name:cores:priority;...` (hex; `0` keeps a value), e.g. `Job.Worker 3:8:0` |
+| `SDT_PROFILE` | off | Samples per second (e.g. `400`) for the built-in profiler; `SDT_PROFILE_THREADS` = the thread names to sample, comma-separated; see Build |
 
 ## Known limits
 
-- Measured only on an overclocked console (CPU about 1785 MHz, GPU 768 MHz): about 50 to 60 fps in
-  the first level at 720p. The main thread is the limit, so stock clocks will be slower; try
-  `SDT_MEMTOTAL_MB=512` there.
-- Not yet tested: playing with no network, docked mode, sleep and resume, anything past the
-  first level, and whether progress resumes after finishing a level.
+- Measured only on an overclocked console (CPU about 1785 MHz, GPU 768 MHz), at 720p. The heaviest
+  level found (Ego City Nightmare) holds 60 fps from a four-core forwarder and runs at about 57 fps
+  from the title override (three cores). The main thread is the limit, so stock clocks will be
+  slower; try `SDT_MEMTOTAL_MB=512` there.
+- Not yet tested: playing with no network, docked mode, and sleep and resume.
 - Game Center features (leaderboards, cloud saves) do not exist here.
 
 ## Build

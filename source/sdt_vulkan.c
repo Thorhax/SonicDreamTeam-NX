@@ -419,3 +419,24 @@ bool __wrap_os_get_available_system_memory(uint64_t *size) {
   if (size) *size = cached;
   return ok;
 }
+
+/* ---- libelf, for Mesa 26.2.7 and later ------------------------------------
+ * The driver's VK_NV_cuda_kernel_launch support (nv_cubin.c) reads CUDA
+ * binaries with libelf, which devkitPro does not package. The game never
+ * creates a CUDA module, so these answer "not available": elf_version() says
+ * the library is too old, and every reader fails after it. Weak, so a real
+ * libelf takes over when one is linked. */
+#define ELF_STUB __attribute__((weak))
+ELF_STUB unsigned elf_version(unsigned v) { (void)v; return 0; /* EV_NONE */ }
+ELF_STUB void *elf_memory(char *image, size_t size) { (void)image; (void)size; return NULL; }
+ELF_STUB int elf_kind(void *e) { (void)e; return 0; /* ELF_K_NONE */ }
+ELF_STUB int elf_end(void *e) { (void)e; return 0; }
+ELF_STUB int elf_errno(void) { return 1; }
+ELF_STUB const char *elf_errmsg(int err) { (void)err; return "libelf is not part of this build"; }
+ELF_STUB void *elf_getscn(void *e, size_t i) { (void)e; (void)i; return NULL; }
+ELF_STUB void *elf_nextscn(void *e, void *scn) { (void)e; (void)scn; return NULL; }
+ELF_STUB void *elf_getdata(void *scn, void *data) { (void)scn; (void)data; return NULL; }
+ELF_STUB void *elf64_getshdr(void *scn) { (void)scn; return NULL; }
+ELF_STUB void *elf64_getehdr(void *e) { (void)e; return NULL; }
+ELF_STUB char *elf_strptr(void *e, size_t sec, size_t off) { (void)e; (void)sec; (void)off; return NULL; }
+ELF_STUB int elf_getshdrstrndx(void *e, size_t *dst) { (void)e; (void)dst; return -1; }

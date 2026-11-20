@@ -12,6 +12,7 @@ is charged to the first caller outside libnx's own wrappers.
   Variations/il2cpp/Release/Symbols/arm64-v8a), to name every engine function.
 --methods: methods.txt written by the port beside prof.bin, to name the game's managed methods.
 --skip-last: leave out the final seconds (closing the game).
+The threads are the ones the port sampled (SDT_PROFILE_THREADS; prof.map names them).
 Diagnostics, after the tables: --raw-waits (a few of UnityMain's waiting samples, every slot named),
 --callers-of NAME (the commonest call chains of samples inside a function whose name contains NAME),
 --gi-waits (UnityMain's waits entered from the game image, with offsets into it).
@@ -94,9 +95,10 @@ depth = int(m['depth'][0]) if 'depth' in m else 4
 rec = 8 + 8 * depth
 n = len(data) // rec
 samples = [struct.unpack_from('<II%dQ' % depth, data, i * rec) for i in range(n)]
-if skip: samples = samples[:-int(skip * hz * 2)]
-if last: samples = samples[-int(last * hz * 2):]
-for t, tname in enumerate(('UnityMain', 'UnityGfxDeviceWorker')):
+tnames = [' '.join(m['thread%d' % i]) for i in range(8) if 'thread%d' % i in m] or ['UnityMain', 'UnityGfxDeviceWorker']
+if skip: samples = samples[:-int(skip * hz * len(tnames))]
+if last: samples = samples[-int(last * hz * len(tnames)):]
+for t, tname in enumerate(tnames):
     ss = [s for s in samples if s[0] == t]
     if not ss: continue
     bymod, byfn, waits = Counter(), Counter(), Counter()
